@@ -50,6 +50,18 @@ cd "$(dirname "$0")/fixtures"
   printf 'Jun 24 09:06:00 mail postfix/smtp[222]: 4q099: to=<late@example.org>, status=deferred (connection timed out)\n'
 } > smtp-quiet.log
 
+# --- multi-sender: several accounts sending bulk at once (no rate-limit/spam) -
+# Models the "compromised-account dump" pattern: 6 distinct noreply@ senders,
+# ~12 submissions each, none dominating. Mirrors the real-world incident where
+# Mailu's rate limiter rejected at RCPT so the queue stayed empty.
+{
+  for u in alpha bravo charlie delta echo foxtrot; do
+    for i in $(seq 1 12); do
+      printf 'Jun 24 11:%02d:%02d mail postfix/smtpd[700]: 4ms%s%02d: client=mailu_front_1[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@%s.example\n' "$i" "$i" "$u" "$i" "$u"
+    done
+  done
+} > smtp-multisender.log
+
 # --- incident: classic `postqueue -p` text listing (text-parser path) --------
 cat > postqueue-incident.txt <<'TXT'
 -Queue ID-  --Size-- ----Arrival Time---- -Sender/Recipient-------

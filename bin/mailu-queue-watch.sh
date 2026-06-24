@@ -64,6 +64,8 @@ STATE_DIR="/var/lib/mailu-queue-watch"
 QUEUE_WARN=200;            QUEUE_CRIT=500
 DEFERRED_WARN=100;         DEFERRED_CRIT=300
 SENDER_SENT_WARN=50;       SENDER_SENT_CRIT=150     # SASL messages in WINDOW
+BULK_SENDER_MSGS=50;       MULTI_SENDER_WARN=3      # a sender sending >= BULK_SENDER_MSGS is "bulk-like";
+MULTI_SENDER_CRIT=5        # alert when this many distinct senders are bulk-like at once
 SENDER_QUEUE_WARN=100;     SENDER_QUEUE_CRIT=300    # messages queued by one sender
 RCPT_DOMAINS_WARN=25;      RCPT_DOMAINS_CRIT=50     # distinct rcpt domains, one sender
 BOUNCE_DEFER_RATE_WARN=20; BOUNCE_DEFER_RATE_CRIT=40 # percent over WINDOW
@@ -176,13 +178,17 @@ else
     bounce_defer_rate=0
 fi
 
-# top authenticated SASL senders in the window
-top_sasl="$(printf '%s\n' "$logs_raw" \
+# authenticated SASL senders in the window
+sasl_tally="$(printf '%s\n' "$logs_raw" \
     | grep -oE 'sasl_username=[^,[:space:]]+' \
-    | cut -d= -f2 | sort | uniq -c | sort -nr | head -10 || true)"
-top_sasl_count="$(printf '%s\n' "$top_sasl" | head -1 | awk '{print $1+0}')"
-top_sasl_user="$(printf '%s\n'  "$top_sasl" | head -1 | awk '{print $2}')"
+    | cut -d= -f2 | sort | uniq -c | sort -nr || true)"
+top_sasl="$(printf '%s\n' "$sasl_tally" | head -10)"
+top_sasl_count="$(printf '%s\n' "$sasl_tally" | head -1 | awk '{print $1+0}')"
+top_sasl_user="$(printf '%s\n'  "$sasl_tally" | head -1 | awk '{print $2}')"
 [ -z "$top_sasl_user" ] && top_sasl_user="none"
+# distinct senders each sending >= BULK_SENDER_MSGS (the "several accounts at once" tell)
+bulk_sender_count="$(printf '%s\n' "$sasl_tally" \
+    | awk -v t="$BULK_SENDER_MSGS" 'NF && $1>=t {n++} END {print n+0}')"
 
 # ---------------------------------------------------------------------------
 # Evaluate thresholds.
@@ -209,6 +215,7 @@ threshold "$top_sasl_count"         "$SENDER_SENT_WARN"      "$SENDER_SENT_CRIT"
 threshold "$queue_top_sender_count" "$SENDER_QUEUE_WARN"     "$SENDER_QUEUE_CRIT"     sender_queue_backlog
 threshold "$queue_top_domain_count" "$RCPT_DOMAINS_WARN"     "$RCPT_DOMAINS_CRIT"     rcpt_domain_fanout
 threshold "$bounce_defer_rate"      "$BOUNCE_DEFER_RATE_WARN" "$BOUNCE_DEFER_RATE_CRIT" bounce_defer_rate_pct
+threshold "$bulk_sender_count"      "$MULTI_SENDER_WARN"     "$MULTI_SENDER_CRIT"     multiple_bulk_senders
 
 if [ "$rate_limit_count" -gt 0 ]; then escalate critical "rate_limit_seen"; fi
 
@@ -224,7 +231,7 @@ reasons_str="${reasons[*]:-none}"
 metric_line="time=$now severity=$severity queue_total=$queue_total deferred_queue=$deferred_queue \
 sent_${WINDOW}=$sent_count bounced_${WINDOW}=$bounced_count deferred_${WINDOW}=$deferred_log_count \
 bounce_defer_rate_pct=$bounce_defer_rate rate_limits_${WINDOW}=$rate_limit_count spam_blocks_${WINDOW}=$spam_block_count \
-top_sasl=${top_sasl_user} top_sasl_count=${top_sasl_count} \
+top_sasl=${top_sasl_user} top_sasl_count=${top_sasl_count} bulk_senders=${bulk_sender_count} \
 queue_top_sender=${queue_top_sender} queue_top_sender_count=${queue_top_sender_count} \
 queue_top_domain_sender=${queue_top_domain_sender} queue_top_domain_count=${queue_top_domain_count} \
 queue_unique_domains=${queue_unique_domains}"
@@ -265,6 +272,7 @@ write_prom() {
         echo "mailu_rate_limit_rejections $rate_limit_count"
         echo "mailu_spam_block_rejections $spam_block_count"
         echo "mailu_top_sasl_sender_messages $top_sasl_count"
+        echo "mailu_bulk_senders $bulk_sender_count"
         echo "mailu_severity{level=\"$severity\"} 1"
     } > "$tmp" 2>/dev/null; then
         mv -f "$tmp" "$PROM_TEXTFILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -296,6 +304,7 @@ bounce_defer_rate=${bounce_defer_rate}%
 rate_limits_${WINDOW}=$rate_limit_count
 spam_blocks_${WINDOW}=$spam_block_count
 top_sasl_sender=$top_sasl_user ($top_sasl_count msgs/${WINDOW})
+bulk_senders=$bulk_sender_count (>= $BULK_SENDER_MSGS msgs each)
 queue_top_sender=$queue_top_sender ($queue_top_sender_count queued)
 top_recipient_fanout=$queue_top_domain_sender ($queue_top_domain_count domains)"
 

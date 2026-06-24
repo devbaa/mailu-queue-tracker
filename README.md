@@ -34,10 +34,11 @@ Every run it samples (see [docs/signals.md](docs/signals.md)):
 | Remote *spam/blacklist/blocked* replies | smtp logs | Reputation damage in progress |
 | Rate-limit rejections | smtp logs | Postfix/Mailu throttling an abuser |
 | Top authenticated **SASL** senders | smtp logs | *Which credential* is sending |
+| **Count of bulk-like SASL senders** | smtp logs | *Several* accounts blasting at once — a credential dump or attacker-provisioned senders |
 
 The combination that points at compromise — rather than a normal transient
-delivery hiccup — is: **one SASL sender spiking + remote spam/blacklist
-rejections + rate-limit hits + a rising deferred queue.**
+delivery hiccup — is: **one (or several) SASL senders spiking + remote
+spam/blacklist rejections + rate-limit hits + a rising deferred queue.**
 
 ## Quick start
 
@@ -105,7 +106,7 @@ A sample critical alert:
 ```
 Mailu queue alert
 severity=critical
-reasons=deferred_queue_gt_300 sasl_sender_sent_gt_150 rcpt_domain_fanout_gt_50 rate_limit_seen spam_blacklist_blocks_ge_5
+reasons=sasl_sender_sent_gt_150 multiple_bulk_senders_gt_5 rate_limit_seen spam_blacklist_blocks_ge_5
 queue_total=812
 deferred_queue=640
 sent_15m=18 bounced_15m=70 deferred_15m=590
@@ -113,6 +114,7 @@ bounce_defer_rate=97%
 rate_limits_15m=4
 spam_blocks_15m=210
 top_sasl_sender=noreply@example.com (430 msgs/15m)
+bulk_senders=7 (>= 50 msgs each)
 queue_top_sender=noreply@example.com (610 queued)
 top_recipient_fanout=noreply@example.com (180 domains)
 ```

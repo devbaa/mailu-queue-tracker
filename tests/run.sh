@@ -31,6 +31,7 @@ STATE_DIR="$1/state"
 QUEUE_WARN=20;  QUEUE_CRIT=50
 DEFERRED_WARN=10;  DEFERRED_CRIT=30
 SENDER_SENT_WARN=10;  SENDER_SENT_CRIT=25
+BULK_SENDER_MSGS=10;  MULTI_SENDER_WARN=3;  MULTI_SENDER_CRIT=5
 SENDER_QUEUE_WARN=20;  SENDER_QUEUE_CRIT=50
 RCPT_DOMAINS_WARN=10;  RCPT_DOMAINS_CRIT=20
 BOUNCE_DEFER_RATE_WARN=20;  BOUNCE_DEFER_RATE_CRIT=40
@@ -70,6 +71,7 @@ check "top sasl sender"      "$out" "top_sasl=noreply@example.com"
 check "top sasl count"       "$out" "top_sasl_count=30"
 check "rcpt domain fanout"   "$out" "queue_top_domain_count=25"
 check "rate limit counted"   "$out" "rate_limits_15m=1"
+check "bulk senders = 1"     "$out" "bulk_senders=1"
 check "severity critical"    "$out" "severity=critical"
 
 echo "T2: quiet metrics (--print)"
@@ -120,6 +122,15 @@ out="$(QUEUE_SOURCE_CMD="cat '$FIX/postqueue-incident.txt'" \
        bash "$WATCH" --config "$d/conf" --print)"
 check "text queue_total"     "$out" "queue_total=5"
 check "text deferred"        "$out" "deferred_queue=3"
+
+echo "T8: multiple bulk senders at once (compromised-account-dump pattern)"
+d="$WORK/t8"; mkdir -p "$d"; make_config "$d"
+out="$(QUEUE_SOURCE_CMD="printf ''" \
+       LOG_SOURCE_CMD="cat '$FIX/smtp-multisender.log'" \
+       bash "$WATCH" --config "$d/conf" --print)"
+check "6 bulk senders"       "$out" "bulk_senders=6"
+check "empty queue"          "$out" "queue_total=0"
+check "severity critical"    "$out" "severity=critical"
 
 echo
 printf 'RESULT: %d passed, %d failed\n' "$pass" "$fail"

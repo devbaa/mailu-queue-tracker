@@ -29,6 +29,7 @@ Read via `docker compose logs --since=$WINDOW smtp` (default `15m`). Counted wit
 | `rate_limits` | lines matching `RATELIMIT_REGEX` (Postfix/Mailu throttling) |
 | `spam_blocks` | lines matching `SPAM_REGEX` (remote *spam/blacklist/blocked/reputation* replies) |
 | `top_sasl` / `top_sasl_count` | most frequent `sasl_username=` in the window — *which authenticated credential* is sending, and how many messages |
+| `bulk_senders` | how many distinct SASL users each sent ≥ `BULK_SENDER_MSGS` in the window. A leaked-credential dump or an attacker-provisioned set of sender accounts shows up as *several* accounts sending bulk at once, with no single one dominating. |
 
 Both regexes are configurable (`RATELIMIT_REGEX`, `SPAM_REGEX`) and matched
 case-insensitively.
@@ -57,7 +58,7 @@ specifically indicates a **compromised account or abusive bulk SMTP** is the
 combination:
 
 ```
-top SASL sender volume spikes
+top SASL sender volume spikes  (or several senders spiking at once)
   + remote replies saying spam / blacklisted / blocked
   + Postfix/Mailu rate-limit rejections
   + deferred queue rising
@@ -66,3 +67,10 @@ top SASL sender volume spikes
 
 That is exactly the set of `reasons=` the watcher emits together in a critical
 alert.
+
+> **Note — when the queue stays empty.** If Mailu's per-user rate limiter
+> rejects abusive mail at `RCPT` (`450 4.2.1 … sending too many emails too
+> fast`), the messages never enter the queue, so `queue_total` reads **0** even
+> during a live incident. This is why the watcher leans on the *log* signals
+> (`rate_limits`, `top_sasl`, `bulk_senders`) and not queue size alone — queue
+> monitoring by itself would miss a rate-limited compromise entirely.

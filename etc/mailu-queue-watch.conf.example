@@ -37,6 +37,14 @@ DEFERRED_WARN=100;         DEFERRED_CRIT=300
 # Per authenticated (SASL) sender: messages submitted within WINDOW.
 SENDER_SENT_WARN=50;       SENDER_SENT_CRIT=150
 
+# "Several accounts sending at once" — a single leaked credential dump or an
+# attacker-provisioned set of sender accounts shows up as multiple distinct
+# SASL users sending bulk volume simultaneously (no single one dominating).
+# A sender submitting >= BULK_SENDER_MSGS in WINDOW counts as "bulk-like"; alert
+# when this many distinct bulk-like senders appear together.
+BULK_SENDER_MSGS=50
+MULTI_SENDER_WARN=3;       MULTI_SENDER_CRIT=5
+
 # Per envelope sender: messages currently sitting in the queue (point-in-time).
 SENDER_QUEUE_WARN=100;     SENDER_QUEUE_CRIT=300
 
