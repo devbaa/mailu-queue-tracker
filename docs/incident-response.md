@@ -38,6 +38,26 @@ Rotating the password kills the attacker's authenticated session for that
 credential. If several `noreply@…`-style accounts are implicated, treat the
 shared origin (leaked list, reused password) as the root cause.
 
+### Find the source IP
+
+The `smtp` log shows only the front (XCLIENT), so get the real client IP from
+the front log:
+
+```bash
+mailu-front-ips.sh --since 6h --user noreply@   # IPs + accounts, suspect only
+```
+
+Then block it (host firewall or fail2ban):
+
+```bash
+# example: drop a single abusive source at the host
+iptables -I INPUT -s 203.0.113.66 -j DROP
+```
+
+If the suspect account shows **only the front's own IP**, the abuse came through
+the front — pull `docker compose logs front` directly for that window to see the
+external addresses, and consider whether submission auth was used from off-host.
+
 ## 3. Drain the bad mail from the queue
 
 Inspect first, then act. **Look before you delete** — make sure you're removing

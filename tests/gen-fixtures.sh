@@ -12,7 +12,7 @@ cd "$(dirname "$0")/fixtures"
   done
   # a little legitimate traffic in parallel
   for i in 1 2 3; do
-    printf '{"queue_name": "active", "queue_id": "4ok%03d", "arrival_time": 1718000100, "message_size": 800, "forced_expire": false, "sender": "billing@example.com", "recipients": [{"address": "customer%d@gmail.com"}]}\n' "$i" "$i"
+    printf '{"queue_name": "active", "queue_id": "4ok%03d", "arrival_time": 1718000100, "message_size": 800, "forced_expire": false, "sender": "billing@example.com", "recipients": [{"address": "customer%d@example.com"}]}\n' "$i" "$i"
   done
 } > postqueue-incident.json
 
@@ -31,21 +31,21 @@ cd "$(dirname "$0")/fixtures"
     printf 'Jun 24 10:06:%02d mail postfix/smtp[222]: 4bnc%03d: to=<x%d@blocklist.example>, status=bounced (blacklisted: listed on barracuda)\n' "$i" "$i" "$i"
   done
   for i in 1 2 3 4 5; do
-    printf 'Jun 24 10:07:0%d mail postfix/smtp[222]: 4snt%03d: to=<ok%d@gmail.com>, status=sent (250 OK)\n' "$i" "$i" "$i"
+    printf 'Jun 24 10:07:0%d mail postfix/smtp[222]: 4snt%03d: to=<ok%d@example.com>, status=sent (250 OK)\n' "$i" "$i" "$i"
   done
   printf 'Jun 24 10:08:00 mail postfix/smtpd[111]: warning: 10.0.0.9: too many errors after AUTH from tor-exit.example[10.0.0.9]: Recipient address rate limit exceeded\n'
 } > smtp-incident.log
 
 # --- quiet: healthy queue + logs --------------------------------------------
 {
-  printf '{"queue_name": "active", "queue_id": "4q001", "arrival_time": 1718000000, "message_size": 900, "forced_expire": false, "sender": "billing@example.com", "recipients": [{"address": "a@gmail.com"}]}\n'
-  printf '{"queue_name": "active", "queue_id": "4q002", "arrival_time": 1718000001, "message_size": 900, "forced_expire": false, "sender": "billing@example.com", "recipients": [{"address": "b@outlook.com"}]}\n'
+  printf '{"queue_name": "active", "queue_id": "4q001", "arrival_time": 1718000000, "message_size": 900, "forced_expire": false, "sender": "billing@example.com", "recipients": [{"address": "a@example.com"}]}\n'
+  printf '{"queue_name": "active", "queue_id": "4q002", "arrival_time": 1718000001, "message_size": 900, "forced_expire": false, "sender": "billing@example.com", "recipients": [{"address": "b@example.org"}]}\n'
 } > postqueue-quiet.json
 
 {
   for i in 1 2 3 4 5; do
     printf 'Jun 24 09:0%d:00 mail postfix/smtpd[111]: 4q%03d: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com\n' "$i" "$i"
-    printf 'Jun 24 09:0%d:01 mail postfix/smtp[222]: 4q%03d: to=<user%d@gmail.com>, status=sent (250 OK)\n' "$i" "$i" "$i"
+    printf 'Jun 24 09:0%d:01 mail postfix/smtp[222]: 4q%03d: to=<user%d@example.com>, status=sent (250 OK)\n' "$i" "$i" "$i"
   done
   printf 'Jun 24 09:06:00 mail postfix/smtp[222]: 4q099: to=<late@example.org>, status=deferred (connection timed out)\n'
 } > smtp-quiet.log
@@ -61,6 +61,20 @@ cd "$(dirname "$0")/fixtures"
     done
   done
 } > smtp-multisender.log
+
+# --- front log: real client IPs behind XCLIENT (uses RFC5737 example IPs) ----
+# 203.0.113.66 = attacker (auths as several noreply@ accounts); 198.51.100.20 =
+# a legit user; 192.168.0.9 / 172.20.0.5 = internal proxy hops (must be hidden).
+{
+  for u in alpha bravo charlie alpha delta; do
+    printf 'mailu_front_1  | 2026/06/22 21:09:47 [info] 30#30: *1 client login:"noreply@%s.example" while in http auth state, client: 203.0.113.66, server: 0.0.0.0:587, login: "noreply@%s.example"\n' "$u" "$u"
+  done
+  printf 'mailu_front_1  | 2026/06/22 21:10:00 [info] 30#30: *9 client login:"info@legit.example" while in http auth state, client: 198.51.100.20, server: 0.0.0.0:993, login: "info@legit.example"\n'
+  printf 'mailu_front_1  | 2026/06/22 21:10:01 [info] 30#30: *9 client login:"info@legit.example" while in http auth state, client: 198.51.100.20, server: 0.0.0.0:993, login: "info@legit.example"\n'
+  # internal hops that must NOT appear as "external" source IPs
+  printf 'mailu_front_1  | 2026/06/22 21:10:02 upstream auth request to admin client: 192.168.0.9\n'
+  printf 'mailu_front_1  | 2026/06/22 21:10:03 proxy connect to backend 172.20.0.5:25\n'
+} > front.log
 
 # --- incident: classic `postqueue -p` text listing (text-parser path) --------
 cat > postqueue-incident.txt <<'TXT'
@@ -78,10 +92,10 @@ cat > postqueue-incident.txt <<'TXT'
                                           victim3@honeypot-3.example
 
 4ok001*         800 Tue Jun 24 10:05:00  billing@example.com
-                                          customer1@gmail.com
+                                          customer1@example.com
 
 4ok002*         800 Tue Jun 24 10:05:01  billing@example.com
-                                          customer2@gmail.com
+                                          customer2@example.com
 
 -- 7 Kbytes in 5 Requests.
 TXT

@@ -4,7 +4,8 @@
 #   * JSON  -- one JSON object per line (`postqueue -j`, Postfix >= 3.1). Robust.
 #   * text  -- the classic `postqueue -p` mailq listing. Best-effort fallback.
 #
-# Emits shell-eval-friendly `key=value` lines on stdout:
+# Emits `key=value` lines on stdout (parse with `read`, never `eval` -- the
+# sender/recipient values are attacker-controlled):
 #   queue_total                total messages in the queue
 #   deferred_queue             messages in the deferred queue
 #   queue_top_sender           envelope sender with the most queued messages

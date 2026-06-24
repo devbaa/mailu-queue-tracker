@@ -53,7 +53,7 @@ run_quiet() { # run_quiet <dir> <extra-args...>
 
 echo "shellcheck:"
 if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck -s bash "$WATCH" "$ROOT/bin/mailu-queue-report.sh" "$ROOT/install.sh"; then
+    if shellcheck -s bash "$ROOT"/bin/*.sh "$ROOT/install.sh" "$ROOT/tests/run.sh" "$ROOT/tests/gen-fixtures.sh"; then
         ok "shellcheck clean"
     else
         bad "shellcheck reported issues"
@@ -131,6 +131,37 @@ out="$(QUEUE_SOURCE_CMD="printf ''" \
 check "6 bulk senders"       "$out" "bulk_senders=6"
 check "empty queue"          "$out" "queue_total=0"
 check "severity critical"    "$out" "severity=critical"
+
+echo "T9: front-log real source IPs (mailu-front-ips.sh)"
+FRONT="$ROOT/bin/mailu-front-ips.sh"
+out="$(FRONT_LOG_SOURCE_CMD="cat '$FIX/front.log'" bash "$FRONT" --config /dev/null)"
+check "attacker IP surfaced"     "$out" "203.0.113.66"
+check "attacker line count = 5"  "$out" "5  203.0.113.66"
+check "legit IP surfaced"        "$out" "198.51.100.20"
+case "$out" in
+    *192.168.0.9*|*172.20.0.5*) bad "internal IP leaked into external list" ;;
+    *) ok "internal/private IPs excluded" ;;
+esac
+out2="$(FRONT_LOG_SOURCE_CMD="cat '$FIX/front.log'" bash "$FRONT" --config /dev/null --user 'noreply@')"
+check "user filter keeps attacker" "$out2" "203.0.113.66"
+case "$out2" in
+    *198.51.100.20*) bad "user filter did not exclude the legit IP" ;;
+    *) ok "user filter narrows to suspect account" ;;
+esac
+
+echo "T10: fixture hygiene (only reserved domains/IPs may be committed)"
+# Allowed: *.example (RFC2606 TLD), example.com, example.org.
+bad_dom="$(grep -rhoE '@[A-Za-z0-9.-]+|helo=<[^>]+>|mx\.[A-Za-z0-9.-]+' "$FIX" \
+    | grep -oE '[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+' \
+    | grep -vE '(^|\.)example$' | grep -vE '^example\.(com|org)$' | sort -u || true)"
+if [ -z "$bad_dom" ]; then ok "no non-reserved domains in fixtures"
+else bad "non-reserved domain(s) in fixtures: $bad_dom"; fi
+# Allowed IPs: RFC5737 (203.0.113/198.51.100/192.0.2), RFC1918, 0.0.0.0, loopback.
+bad_ip="$(grep -rhoE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$FIX" \
+    | grep -vE '^(203\.0\.113|198\.51\.100|192\.0\.2)\.' \
+    | grep -vE '^(10|127)\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^0\.0\.0\.0$' | sort -u || true)"
+if [ -z "$bad_ip" ]; then ok "no routable/real IPs in fixtures"
+else bad "non-reserved IP(s) in fixtures: $bad_ip"; fi
 
 echo
 printf 'RESULT: %d passed, %d failed\n' "$pass" "$fail"

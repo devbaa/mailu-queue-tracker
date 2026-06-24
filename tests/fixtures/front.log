@@ -1,0 +1,9 @@
+mailu_front_1  | 2026/06/22 21:09:47 [info] 30#30: *1 client login:"noreply@alpha.example" while in http auth state, client: 203.0.113.66, server: 0.0.0.0:587, login: "noreply@alpha.example"
+mailu_front_1  | 2026/06/22 21:09:47 [info] 30#30: *1 client login:"noreply@bravo.example" while in http auth state, client: 203.0.113.66, server: 0.0.0.0:587, login: "noreply@bravo.example"
+mailu_front_1  | 2026/06/22 21:09:47 [info] 30#30: *1 client login:"noreply@charlie.example" while in http auth state, client: 203.0.113.66, server: 0.0.0.0:587, login: "noreply@charlie.example"
+mailu_front_1  | 2026/06/22 21:09:47 [info] 30#30: *1 client login:"noreply@alpha.example" while in http auth state, client: 203.0.113.66, server: 0.0.0.0:587, login: "noreply@alpha.example"
+mailu_front_1  | 2026/06/22 21:09:47 [info] 30#30: *1 client login:"noreply@delta.example" while in http auth state, client: 203.0.113.66, server: 0.0.0.0:587, login: "noreply@delta.example"
+mailu_front_1  | 2026/06/22 21:10:00 [info] 30#30: *9 client login:"info@legit.example" while in http auth state, client: 198.51.100.20, server: 0.0.0.0:993, login: "info@legit.example"
+mailu_front_1  | 2026/06/22 21:10:01 [info] 30#30: *9 client login:"info@legit.example" while in http auth state, client: 198.51.100.20, server: 0.0.0.0:993, login: "info@legit.example"
+mailu_front_1  | 2026/06/22 21:10:02 upstream auth request to admin client: 192.168.0.9
+mailu_front_1  | 2026/06/22 21:10:03 proxy connect to backend 172.20.0.5:25

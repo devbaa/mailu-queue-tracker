@@ -33,7 +33,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
     if have_systemd; then
         systemctl disable --now mailu-queue-watch.timer 2>/dev/null || true
     fi
-    rm -f "$SBIN_DIR/mailu-queue-watch.sh" "$SBIN_DIR/mailu-queue-report.sh"
+    rm -f "$SBIN_DIR/mailu-queue-watch.sh" "$SBIN_DIR/mailu-queue-report.sh" \
+          "$SBIN_DIR/mailu-front-ips.sh"
     rm -rf "$LIB_DIR"
     rm -f "$SYSTEMD_DIR/mailu-queue-watch.service" "$SYSTEMD_DIR/mailu-queue-watch.timer"
     if have_systemd; then systemctl daemon-reload || true; fi
@@ -43,12 +44,15 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 echo "Installing scripts to $SBIN_DIR ..."
-install -m 0755 "$SRC/bin/mailu-queue-watch.sh"  "$SBIN_DIR/mailu-queue-watch.sh"
-install -m 0755 "$SRC/bin/mailu-queue-report.sh" "$SBIN_DIR/mailu-queue-report.sh"
+for s in "$SRC"/bin/*.sh; do
+    install -m 0755 "$s" "$SBIN_DIR/$(basename "$s")"
+done
 
-echo "Installing parser to $LIB_DIR ..."
+echo "Installing parsers to $LIB_DIR ..."
 install -d -m 0755 "$LIB_DIR"
-install -m 0644 "$SRC/lib/parse-queue.awk" "$LIB_DIR/parse-queue.awk"
+for a in "$SRC"/lib/*.awk; do
+    install -m 0644 "$a" "$LIB_DIR/$(basename "$a")"
+done
 
 if [ -f "$CONFIG" ]; then
     echo "Keeping existing config $CONFIG"

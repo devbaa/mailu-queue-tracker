@@ -225,6 +225,14 @@ fi
 
 reasons_str="${reasons[*]:-none}"
 
+# Sanitise attacker-controlled display strings (envelope sender / SASL user)
+# before they enter the space-delimited key=value metric line or the alert text,
+# so a crafted address can't break log parsing. Normal addresses are unaffected.
+sanitize() { printf '%s' "$1" | tr -d '\n\r' | tr ' \t="' '____'; }
+top_sasl_user="$(sanitize "$top_sasl_user")"
+queue_top_sender="$(sanitize "$queue_top_sender")"
+queue_top_domain_sender="$(sanitize "$queue_top_domain_sender")"
+
 # ---------------------------------------------------------------------------
 # A single key=value metrics line (easy to grep / ship to a log pipeline).
 # ---------------------------------------------------------------------------

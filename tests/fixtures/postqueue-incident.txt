@@ -12,9 +12,9 @@
                                           victim3@honeypot-3.example
 
 4ok001*         800 Tue Jun 24 10:05:00  billing@example.com
-                                          customer1@gmail.com
+                                          customer1@example.com
 
 4ok002*         800 Tue Jun 24 10:05:01  billing@example.com
-                                          customer2@gmail.com
+                                          customer2@example.com
 
 -- 7 Kbytes in 5 Requests.

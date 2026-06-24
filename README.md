@@ -119,6 +119,23 @@ queue_top_sender=noreply@example.com (610 queued)
 top_recipient_fanout=noreply@example.com (180 domains)
 ```
 
+## Finding the attacker's source IP
+
+The Mailu `front` proxies submission to the `smtp` container via `XCLIENT`, so
+the `smtp` log only ever shows the front's own address. The real external IP is
+in the **front** log:
+
+```bash
+mailu-front-ips.sh --since 6h                 # top external client IPs + users
+mailu-front-ips.sh --since 6h --user noreply@  # narrow to a suspect account
+```
+
+It hides private/internal hops by default and lists, per IP, how many lines and
+which usernames authenticated from it — feed the result to your firewall /
+fail2ban. (If a compromised account shows *only* the front's own IP, the
+submissions came through the front and you need the front nginx logs, not the
+`smtp` ones — which is exactly when this helper earns its keep.)
+
 ## Responding to an alert
 
 Start in **alert-only** mode. Don't auto-delete mail or auto-disable accounts on
@@ -156,16 +173,28 @@ enable Mailu's per-user message rate limits (Admin → user settings), require
 2FA on webmail/admin, and restrict who may relay. The tracker tells you when
 those controls are being tested.
 
+## Security
+
+This tool parses data from a host that's under attack, so every parsed field
+(SASL user, sender, recipient, HELO, rejection text) is treated as untrusted: no
+parsed value is ever `eval`-ed or built into a shell command, parsers do no I/O,
+display strings are sanitised before entering the metric line, and alerts are
+metadata-only. Secrets stay in the `chmod 600` config (git-ignored). See
+[SECURITY.md](SECURITY.md) for the full threat model.
+
 ## Repository layout
 
 ```
 bin/mailu-queue-watch.sh      main watcher (config-driven, testable)
 bin/mailu-queue-report.sh     weekly-review summary
+bin/mailu-front-ips.sh        real client IPs from the front log (deanonymise XCLIENT)
 lib/parse-queue.awk           postqueue -j / -p parser (mawk-compatible)
+lib/parse-front.awk           front-log IP/user correlation (mawk-compatible)
 etc/mailu-queue-watch.conf.example   documented config template
 systemd/                      oneshot service + 5-minute timer
 install.sh                    install / --uninstall
 docs/                         signals, thresholds, incident response
+SECURITY.md                   threat model: untrusted-data handling & secrets
 tests/                        fixture-driven end-to-end tests (no Docker needed)
 ```
 
