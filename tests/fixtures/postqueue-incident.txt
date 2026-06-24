@@ -1,0 +1,20 @@
+-Queue ID-  --Size-- ----Arrival Time---- -Sender/Recipient-------
+4inc001        2048 Tue Jun 24 10:00:01  noreply@example.com
+                         (host mx.honeypot-1.example said: 554 5.7.1 blocked using Spamhaus)
+                                          victim1@honeypot-1.example
+
+4inc002        2048 Tue Jun 24 10:00:02  noreply@example.com
+                         (host mx.honeypot-2.example said: 554 5.7.1 blacklisted)
+                                          victim2@honeypot-2.example
+
+4inc003        2048 Tue Jun 24 10:00:03  noreply@example.com
+                         (host mx.honeypot-3.example said: 554 blocked)
+                                          victim3@honeypot-3.example
+
+4ok001*         800 Tue Jun 24 10:05:00  billing@example.com
+                                          customer1@example.com
+
+4ok002*         800 Tue Jun 24 10:05:01  billing@example.com
+                                          customer2@example.com
+
+-- 7 Kbytes in 5 Requests.

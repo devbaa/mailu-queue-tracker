@@ -1,0 +1,93 @@
+# mailu-queue-watch configuration. Sourced as a bash script.
+# Copy to /etc/mailu-queue-watch.conf and edit. Keep it chmod 600 -- it holds
+# notification secrets.
+
+# ---------------------------------------------------------------------------
+# Mailu / Docker wiring
+# ---------------------------------------------------------------------------
+# Directory containing your Mailu docker-compose.yml.
+COMPOSE_DIR="/opt/mailu"
+# Compose invocation. Use "docker-compose" for the legacy v1 binary.
+COMPOSE_CMD="docker compose"
+# Service names in the compose file.
+SMTP_SERVICE="smtp"
+FRONT_SERVICE="front"
+# Log window for rate calculations, and the wider window captured in snapshots.
+WINDOW="15m"
+SNAPSHOT_WINDOW="30m"
+
+# ---------------------------------------------------------------------------
+# Output locations
+# ---------------------------------------------------------------------------
+LOG_FILE="/var/log/mailu-queue-watch.log"
+ALERT_FILE="/var/log/mailu-queue-alerts.log"
+STATE_DIR="/var/lib/mailu-queue-watch"
+
+# ---------------------------------------------------------------------------
+# Thresholds
+# ---------------------------------------------------------------------------
+# These defaults suit a busy server. For a low-volume transactional server they
+# are far too high -- lower them sharply (see docs/thresholds.md). A warning is
+# raised above *_WARN; a critical above *_CRIT.
+
+# Global queue size.
+QUEUE_WARN=200;            QUEUE_CRIT=500
+DEFERRED_WARN=100;         DEFERRED_CRIT=300
+
+# Per authenticated (SASL) sender: messages submitted within WINDOW.
+SENDER_SENT_WARN=50;       SENDER_SENT_CRIT=150
+
+# "Several accounts sending at once" — a single leaked credential dump or an
+# attacker-provisioned set of sender accounts shows up as multiple distinct
+# SASL users sending bulk volume simultaneously (no single one dominating).
+# A sender submitting >= BULK_SENDER_MSGS in WINDOW counts as "bulk-like"; alert
+# when this many distinct bulk-like senders appear together.
+BULK_SENDER_MSGS=50
+MULTI_SENDER_WARN=3;       MULTI_SENDER_CRIT=5
+
+# Per envelope sender: messages currently sitting in the queue (point-in-time).
+SENDER_QUEUE_WARN=100;     SENDER_QUEUE_CRIT=300
+
+# Per envelope sender: distinct recipient domains currently in the queue.
+# Honeypot blasts fan out across many unrelated domains.
+RCPT_DOMAINS_WARN=25;      RCPT_DOMAINS_CRIT=50
+
+# Bounce+defer rate over WINDOW, as a percentage of delivery attempts.
+BOUNCE_DEFER_RATE_WARN=20; BOUNCE_DEFER_RATE_CRIT=40
+
+# Remote spam/blacklist rejections seen in WINDOW (count).
+SPAM_BLOCK_WARN=1;         SPAM_BLOCK_CRIT=5
+
+# ---------------------------------------------------------------------------
+# Log match patterns (extended regex, matched case-insensitively)
+# ---------------------------------------------------------------------------
+RATELIMIT_REGEX='too many|rate.?limit|sasl login name rejected|sender address rejected.*rate|recipient address rate'
+SPAM_REGEX='spam|blacklist|blocklist|blocked|policy rejection|reputation|hostkarma|spamhaus|barracuda|listed on|access denied|554 5.7.1'
+
+# ---------------------------------------------------------------------------
+# Notifications (metadata only -- no recipients or message bodies are sent)
+# ---------------------------------------------------------------------------
+# Re-notify at most once per this many minutes for a sustained incident; an
+# escalation (warning -> critical) always notifies immediately.
+ALERT_COOLDOWN_MINUTES=30
+
+# Telegram: create a bot via @BotFather, then get the chat id.
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+
+# Slack: an Incoming Webhook URL.
+SLACK_WEBHOOK_URL=""
+
+# Optional custom handler. The alert text is piped to this command on stdin,
+# e.g. ALERT_COMMAND='mail -s "Mailu alert" you@example.com'
+ALERT_COMMAND=""
+
+# ---------------------------------------------------------------------------
+# Evidence & export
+# ---------------------------------------------------------------------------
+# Snapshot the queue and recent logs into STATE_DIR/snapshots on every alert.
+SNAPSHOT_ON_ALERT=1
+
+# Optional Prometheus node_exporter textfile. Leave empty to disable.
+# PROM_TEXTFILE="/var/lib/node_exporter/textfile_collector/mailu_queue.prom"
+PROM_TEXTFILE=""

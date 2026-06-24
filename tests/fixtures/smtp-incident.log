@@ -1,0 +1,77 @@
+Jun 24 10:01:00 mail postfix/smtpd[111]: 4inc001: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:02:00 mail postfix/smtpd[111]: 4inc002: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:03:00 mail postfix/smtpd[111]: 4inc003: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:04:00 mail postfix/smtpd[111]: 4inc004: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:05:00 mail postfix/smtpd[111]: 4inc005: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:06:00 mail postfix/smtpd[111]: 4inc006: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:07:00 mail postfix/smtpd[111]: 4inc007: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:08:00 mail postfix/smtpd[111]: 4inc008: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:09:00 mail postfix/smtpd[111]: 4inc009: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:10:00 mail postfix/smtpd[111]: 4inc010: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:11:00 mail postfix/smtpd[111]: 4inc011: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:12:00 mail postfix/smtpd[111]: 4inc012: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:13:00 mail postfix/smtpd[111]: 4inc013: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:14:00 mail postfix/smtpd[111]: 4inc014: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:15:00 mail postfix/smtpd[111]: 4inc015: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:16:00 mail postfix/smtpd[111]: 4inc016: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:17:00 mail postfix/smtpd[111]: 4inc017: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:18:00 mail postfix/smtpd[111]: 4inc018: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:19:00 mail postfix/smtpd[111]: 4inc019: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:20:00 mail postfix/smtpd[111]: 4inc020: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:21:00 mail postfix/smtpd[111]: 4inc021: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:22:00 mail postfix/smtpd[111]: 4inc022: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:23:00 mail postfix/smtpd[111]: 4inc023: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:24:00 mail postfix/smtpd[111]: 4inc024: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:25:00 mail postfix/smtpd[111]: 4inc025: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:26:00 mail postfix/smtpd[111]: 4inc026: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:27:00 mail postfix/smtpd[111]: 4inc027: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:28:00 mail postfix/smtpd[111]: 4inc028: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:29:00 mail postfix/smtpd[111]: 4inc029: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:30:00 mail postfix/smtpd[111]: 4inc030: client=tor-exit.example[10.0.0.9], sasl_method=PLAIN, sasl_username=noreply@example.com
+Jun 24 10:05:00 mail postfix/smtpd[111]: 4ok001: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 10:05:00 mail postfix/smtpd[111]: 4ok002: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 10:05:00 mail postfix/smtpd[111]: 4ok003: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 10:01:01 mail postfix/smtp[222]: 4inc001: to=<victim1@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:02:01 mail postfix/smtp[222]: 4inc002: to=<victim2@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:03:01 mail postfix/smtp[222]: 4inc003: to=<victim3@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:04:01 mail postfix/smtp[222]: 4inc004: to=<victim4@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:05:01 mail postfix/smtp[222]: 4inc005: to=<victim5@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:06:01 mail postfix/smtp[222]: 4inc006: to=<victim6@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:07:01 mail postfix/smtp[222]: 4inc007: to=<victim7@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:08:01 mail postfix/smtp[222]: 4inc008: to=<victim8@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:09:01 mail postfix/smtp[222]: 4inc009: to=<victim9@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:10:01 mail postfix/smtp[222]: 4inc010: to=<victim10@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:11:01 mail postfix/smtp[222]: 4inc011: to=<victim11@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:12:01 mail postfix/smtp[222]: 4inc012: to=<victim12@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:13:01 mail postfix/smtp[222]: 4inc013: to=<victim13@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:14:01 mail postfix/smtp[222]: 4inc014: to=<victim14@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:15:01 mail postfix/smtp[222]: 4inc015: to=<victim15@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:16:01 mail postfix/smtp[222]: 4inc016: to=<victim16@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:17:01 mail postfix/smtp[222]: 4inc017: to=<victim17@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:18:01 mail postfix/smtp[222]: 4inc018: to=<victim18@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:19:01 mail postfix/smtp[222]: 4inc019: to=<victim19@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:20:01 mail postfix/smtp[222]: 4inc020: to=<victim20@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:21:01 mail postfix/smtp[222]: 4inc021: to=<victim21@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:22:01 mail postfix/smtp[222]: 4inc022: to=<victim22@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:23:01 mail postfix/smtp[222]: 4inc023: to=<victim23@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:24:01 mail postfix/smtp[222]: 4inc024: to=<victim24@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:25:01 mail postfix/smtp[222]: 4inc025: to=<victim25@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:26:01 mail postfix/smtp[222]: 4inc026: to=<victim26@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:27:01 mail postfix/smtp[222]: 4inc027: to=<victim27@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:28:01 mail postfix/smtp[222]: 4inc028: to=<victim28@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:29:01 mail postfix/smtp[222]: 4inc029: to=<victim29@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:30:01 mail postfix/smtp[222]: 4inc030: to=<victim30@honeypot.example>, relay=mx.honeypot.example[203.0.113.7]:25, status=deferred (host mx.honeypot.example said: 554 5.7.1 blocked using Spamhaus reputation list)
+Jun 24 10:06:01 mail postfix/smtp[222]: 4bnc001: to=<x1@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:02 mail postfix/smtp[222]: 4bnc002: to=<x2@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:03 mail postfix/smtp[222]: 4bnc003: to=<x3@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:04 mail postfix/smtp[222]: 4bnc004: to=<x4@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:05 mail postfix/smtp[222]: 4bnc005: to=<x5@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:06 mail postfix/smtp[222]: 4bnc006: to=<x6@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:07 mail postfix/smtp[222]: 4bnc007: to=<x7@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:06:08 mail postfix/smtp[222]: 4bnc008: to=<x8@blocklist.example>, status=bounced (blacklisted: listed on barracuda)
+Jun 24 10:07:01 mail postfix/smtp[222]: 4snt001: to=<ok1@example.com>, status=sent (250 OK)
+Jun 24 10:07:02 mail postfix/smtp[222]: 4snt002: to=<ok2@example.com>, status=sent (250 OK)
+Jun 24 10:07:03 mail postfix/smtp[222]: 4snt003: to=<ok3@example.com>, status=sent (250 OK)
+Jun 24 10:07:04 mail postfix/smtp[222]: 4snt004: to=<ok4@example.com>, status=sent (250 OK)
+Jun 24 10:07:05 mail postfix/smtp[222]: 4snt005: to=<ok5@example.com>, status=sent (250 OK)
+Jun 24 10:08:00 mail postfix/smtpd[111]: warning: 10.0.0.9: too many errors after AUTH from tor-exit.example[10.0.0.9]: Recipient address rate limit exceeded

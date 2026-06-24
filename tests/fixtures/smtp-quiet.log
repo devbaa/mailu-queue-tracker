@@ -1,0 +1,11 @@
+Jun 24 09:01:00 mail postfix/smtpd[111]: 4q001: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 09:01:01 mail postfix/smtp[222]: 4q001: to=<user1@example.com>, status=sent (250 OK)
+Jun 24 09:02:00 mail postfix/smtpd[111]: 4q002: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 09:02:01 mail postfix/smtp[222]: 4q002: to=<user2@example.com>, status=sent (250 OK)
+Jun 24 09:03:00 mail postfix/smtpd[111]: 4q003: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 09:03:01 mail postfix/smtp[222]: 4q003: to=<user3@example.com>, status=sent (250 OK)
+Jun 24 09:04:00 mail postfix/smtpd[111]: 4q004: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 09:04:01 mail postfix/smtp[222]: 4q004: to=<user4@example.com>, status=sent (250 OK)
+Jun 24 09:05:00 mail postfix/smtpd[111]: 4q005: client=app.example[10.0.0.2], sasl_method=PLAIN, sasl_username=billing@example.com
+Jun 24 09:05:01 mail postfix/smtp[222]: 4q005: to=<user5@example.com>, status=sent (250 OK)
+Jun 24 09:06:00 mail postfix/smtp[222]: 4q099: to=<late@example.org>, status=deferred (connection timed out)

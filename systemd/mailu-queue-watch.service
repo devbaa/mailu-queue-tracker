@@ -1,0 +1,15 @@
+[Unit]
+Description=Mailu queue anomaly watcher
+Documentation=https://github.com/devbaa/mailu-queue-tracker
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mailu-queue-watch.sh --config /etc/mailu-queue-watch.conf
+Nice=10
+# Hardening: the script only needs to read logs/queue via docker and write its
+# own state and log files.
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
