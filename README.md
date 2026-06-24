@@ -109,6 +109,8 @@ A sample critical alert:
 
 ```
 Mailu queue alert
+noreply@example.com sent 430 messages in 15m and 97% are failing — rate-limited, rejected as spam/blacklisted, 7 accounts sending at once.
+
 severity=critical
 reasons=sasl_sender_sent_gt_150 multiple_bulk_senders_gt_5 rate_limit_seen spam_blacklist_blocks_ge_5
 queue_total=812

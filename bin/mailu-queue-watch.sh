@@ -297,9 +297,32 @@ if [ "$severity" = "ok" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# One-line, plain-language headline (so an alert is understandable at a glance
+# on a phone), followed by the metric detail.
+# ---------------------------------------------------------------------------
+if [ "$top_sasl_count" -gt 0 ]; then
+    summary="${top_sasl_user} sent ${top_sasl_count} messages in ${WINDOW}"
+    [ "$delivery_total" -gt 0 ] && summary="${summary} and ${bounce_defer_rate}% are failing"
+elif [ "$queue_top_sender" != "none" ] && [ "$queue_top_sender_count" -gt 0 ]; then
+    summary="${queue_top_sender} has ${queue_top_sender_count} messages stuck in the queue"
+    [ "$queue_top_domain_count" -gt 0 ] && summary="${summary}, fanned out to ${queue_top_domain_count} recipient domains"
+else
+    summary="queue is at ${queue_total} messages (${deferred_queue} deferred)"
+fi
+cues=""
+[ "$rate_limit_count" -gt 0 ] && cues="${cues}rate-limited, "
+[ "$spam_block_count" -gt 0 ] && cues="${cues}rejected as spam/blacklisted, "
+[ "$bulk_sender_count" -ge "${MULTI_SENDER_WARN:-3}" ] && cues="${cues}${bulk_sender_count} accounts sending at once, "
+cues="${cues%, }"
+[ -n "$cues" ] && summary="${summary} — ${cues}"
+summary="${summary}."
+
+# ---------------------------------------------------------------------------
 # Build the (metadata-only) alert text.
 # ---------------------------------------------------------------------------
 alert_text="Mailu queue alert
+$summary
+
 time=$now
 severity=$severity
 reasons=$reasons_str
@@ -320,6 +343,7 @@ top_recipient_fanout=$queue_top_domain_sender ($queue_top_domain_count domains)"
 if [ "$DRY_RUN" -eq 0 ]; then
     {
         echo "[$now] severity=$severity reasons=$reasons_str"
+        echo "$summary"
         printf '%s\n' "$metric_line"
         echo "top_sasl:"
         printf '%s\n' "$top_sasl"

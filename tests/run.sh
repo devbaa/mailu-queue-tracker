@@ -113,6 +113,8 @@ echo "T6: dry-run does not touch files"
 d="$WORK/t6"; mkdir -p "$d"; make_config "$d"
 out="$(run_incident "$d" --dry-run)"
 check "dry-run shows alert"  "$out" "ALERT (dry-run)"
+check "plain-language summary line" "$out" "sent 30 messages in 15m and 88% are failing"
+check "summary lists red flags"     "$out" "rate-limited, rejected as spam/blacklisted"
 if [ -f "$d/metrics.log" ]; then bad "dry-run wrote metrics.log"; else ok "dry-run wrote nothing"; fi
 
 echo "T7: text-format postqueue (-p) parsing path"
