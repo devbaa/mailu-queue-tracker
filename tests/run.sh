@@ -179,6 +179,17 @@ eval "$qsrc" DRAIN_APPLY_CMD="\"cat > '$capt'\"" bash "$DRAIN" --config /dev/nul
 got="$(grep -c . "$capt" 2>/dev/null || echo 0)"
 if [ "$got" -eq 60 ]; then ok "apply received all 60 ids"; else bad "apply got $got ids (expected 60)"; fi
 
+echo "T12: mailu-alert-test.sh composes a timestamped message"
+AT="$ROOT/bin/mailu-alert-test.sh"
+o="$(bash "$AT" --config /dev/null --print)"
+check "test label"        "$o" "mailu-queue-tracker test"
+check "has UTC line"      "$o" "UTC:"
+check "has epoch"         "$o" "epoch"
+o="$(bash "$AT" --config /dev/null --print -m "hello world")"
+check "custom note shown" "$o" "note: hello world"
+o="$(bash "$AT" --config /dev/null 2>&1 || true)"
+check "warns if unconfigured" "$o" "no notification channel configured"
+
 echo
 printf 'RESULT: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

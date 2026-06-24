@@ -69,6 +69,7 @@ SPAM_REGEX='spam|blacklist|blocklist|blocked|policy rejection|reputation|hostkar
 # ---------------------------------------------------------------------------
 # Re-notify at most once per this many minutes for a sustained incident; an
 # escalation (warning -> critical) always notifies immediately.
+# Tip: after setting the channels below, verify delivery with `mailu-alert-test.sh`.
 ALERT_COOLDOWN_MINUTES=30
 
 # Telegram: create a bot via @BotFather, then get the chat id.

@@ -85,6 +85,37 @@ they are far too high — lower them (there's a ready-to-paste profile in
 > The config holds secrets, so it is installed `chmod 600`. It is also
 > git-ignored — only the `.example` template is committed.
 
+### Test notifications
+
+Send a timestamped test alert and confirm it arrives (compare the embedded
+send-time to when it lands to gauge any delay):
+
+```bash
+sudo mailu-alert-test.sh                 # all configured channels
+sudo mailu-alert-test.sh --telegram      # just Telegram
+sudo mailu-alert-test.sh --slack         # just Slack
+sudo mailu-alert-test.sh --print         # show the message without sending
+```
+
+The message carries local time (with UTC offset), the timezone, UTC, and the
+epoch, so the send moment is unambiguous. Each channel reports `OK` or
+`FAILED (http …)` with the server's response. Equivalent raw one-liners that
+source your config (no secrets pasted):
+
+```bash
+# Telegram
+. /etc/mailu-queue-watch.conf
+curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  -d "chat_id=${TELEGRAM_CHAT_ID}" \
+  --data-urlencode "text=mailu test $(date -Is) $(date +%Z) | UTC $(date -u +%Y-%m-%dT%H:%M:%SZ) | $(hostname)"; echo
+
+# Slack
+. /etc/mailu-queue-watch.conf
+curl -sS -X POST -H 'Content-type: application/json' \
+  --data "{\"text\":\"mailu test $(date -Is) $(date +%Z) | UTC $(date -u +%Y-%m-%dT%H:%M:%SZ) | $(hostname)\"}" \
+  "$SLACK_WEBHOOK_URL"; echo
+```
+
 ## Verify
 
 ```bash
