@@ -1,0 +1,16 @@
+# Local runtime config may contain secrets (tokens, webhook URLs).
+# The committed template is etc/mailu-queue-watch.conf.example.
+*.conf
+!*.conf.example
+
+# Local logs / state if anyone runs the tracker from a checkout
+*.log
+state/
+snapshots/
+# ...but the committed test fixtures include sample log files
+!tests/fixtures/*.log
+
+# Editor / OS noise
+*~
+*.swp
+.DS_Store

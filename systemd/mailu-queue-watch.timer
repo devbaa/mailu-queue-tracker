@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Mailu queue anomaly watcher every 5 minutes
+Documentation=https://github.com/devbaa/mailu-queue-tracker
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Avoid every host firing on the same second if you run several.
+RandomizedDelaySec=20
+Unit=mailu-queue-watch.service
+
+[Install]
+WantedBy=timers.target
