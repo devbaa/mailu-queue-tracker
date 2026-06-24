@@ -1,1 +1,180 @@
 # mailu-queue-tracker
+
+Early detection of **compromised-account / abusive bulk SMTP** on a
+[Mailu](https://github.com/mailu/mailu) (Postfix) host.
+
+When an account password is compromised, the symptom is sudden authenticated
+bulk sending: the queue grows, messages defer/bounce, remote servers reject mail
+as *spam / blacklisted / blocked*, and Postfix/Mailu rate limits start firing.
+This tracker watches queue **behaviour by sender, source, destination and
+rejection reason** — not just queue size — and alerts before the damage spreads.
+
+It is intentionally small: a Bash script driven by a config file, run every 5
+minutes by a systemd timer, talking to your existing Mailu containers via
+`docker compose`. No agent, no database.
+
+```
+docker compose ──► postqueue -j / -p ─┐
+                                       ├─► mailu-queue-watch.sh ─► metrics log
+docker compose ──► smtp container logs ┘            │                alert log
+                                                    │                snapshot
+                                                    └─► Telegram / Slack / cmd
+```
+
+## What it tracks
+
+Every run it samples (see [docs/signals.md](docs/signals.md)):
+
+| Signal | Source | Why it matters |
+| --- | --- | --- |
+| Total / deferred queue size | `postqueue` | Backlog from undeliverable bulk mail |
+| Messages queued **per envelope sender** | `postqueue` | One account dominating the queue |
+| Distinct **recipient domains per sender** | `postqueue` | Honeypot blasts fan out across many domains |
+| Sent / bounced / deferred in the window | smtp logs | Delivery health and bounce/defer rate |
+| Remote *spam/blacklist/blocked* replies | smtp logs | Reputation damage in progress |
+| Rate-limit rejections | smtp logs | Postfix/Mailu throttling an abuser |
+| Top authenticated **SASL** senders | smtp logs | *Which credential* is sending |
+
+The combination that points at compromise — rather than a normal transient
+delivery hiccup — is: **one SASL sender spiking + remote spam/blacklist
+rejections + rate-limit hits + a rising deferred queue.**
+
+## Quick start
+
+```bash
+git clone https://github.com/devbaa/mailu-queue-tracker.git
+cd mailu-queue-tracker
+sudo ./install.sh                 # installs scripts, config, systemd timer
+sudo nano /etc/mailu-queue-watch.conf   # set COMPOSE_DIR + notifications
+```
+
+Then verify it can read your Mailu queue and logs:
+
+```bash
+sudo mailu-queue-watch.sh --print     # compute + print metrics, change nothing
+```
+
+You should see a `severity=ok ... queue_total=... top_sasl=...` line. The timer
+runs the watcher every 5 minutes; tail the output with:
+
+```bash
+tail -f /var/log/mailu-queue-watch.log /var/log/mailu-queue-alerts.log
+```
+
+`install.sh --uninstall` removes the scripts and units (leaving your config and
+logs). On hosts without systemd, run `mailu-queue-watch.sh` from cron instead.
+
+## Configuration
+
+All behaviour lives in `/etc/mailu-queue-watch.conf` (sourced as Bash). The
+essentials:
+
+```bash
+COMPOSE_DIR="/opt/mailu"          # dir containing your Mailu docker-compose.yml
+COMPOSE_CMD="docker compose"      # use "docker-compose" for the legacy binary
+TELEGRAM_BOT_TOKEN="..."          # optional
+TELEGRAM_CHAT_ID="..."            # optional
+SLACK_WEBHOOK_URL="..."           # optional
+```
+
+See [`etc/mailu-queue-watch.conf.example`](etc/mailu-queue-watch.conf.example)
+for every option, and **[docs/thresholds.md](docs/thresholds.md)** for tuning —
+the shipped defaults suit a busy server and are usually **far too high for a
+small transactional server**, where you should lower them sharply.
+
+Secrets live only in the config file (installed `chmod 600`). Alerts are
+**metadata-only**: no recipient lists or message contents are ever sent.
+
+## Alerts
+
+When any threshold is crossed the watcher:
+
+1. appends a detailed record to `/var/log/mailu-queue-alerts.log`;
+2. snapshots the queue and recent `smtp`/`front` logs under
+   `/var/lib/mailu-queue-watch/snapshots/<timestamp>/` (evidence for later);
+3. sends a notification — **rate-limited** by `ALERT_COOLDOWN_MINUTES` so a
+   sustained incident does not page you every 5 minutes, while an escalation
+   (warning → critical) always notifies immediately.
+
+Notification channels: Telegram, Slack incoming webhook, and/or an arbitrary
+`ALERT_COMMAND` (the alert text is piped to it on stdin — e.g. `mail`, PagerDuty
+`curl`, etc.).
+
+A sample critical alert:
+
+```
+Mailu queue alert
+severity=critical
+reasons=deferred_queue_gt_300 sasl_sender_sent_gt_150 rcpt_domain_fanout_gt_50 rate_limit_seen spam_blacklist_blocks_ge_5
+queue_total=812
+deferred_queue=640
+sent_15m=18 bounced_15m=70 deferred_15m=590
+bounce_defer_rate=97%
+rate_limits_15m=4
+spam_blocks_15m=210
+top_sasl_sender=noreply@example.com (430 msgs/15m)
+queue_top_sender=noreply@example.com (610 queued)
+top_recipient_fanout=noreply@example.com (180 domains)
+```
+
+## Responding to an alert
+
+Start in **alert-only** mode. Don't auto-delete mail or auto-disable accounts on
+day one — you may have legitimate transactional spikes. Once you trust the
+thresholds, see **[docs/incident-response.md](docs/incident-response.md)** for
+the containment playbook (disabling the compromised account in Mailu admin,
+draining the queue, and the safe-vs-risky automatic actions).
+
+## Metrics & dashboards
+
+Each run appends one `key=value` line to `/var/log/mailu-queue-watch.log`, easy
+to ship to Loki/Elastic or grep directly. Set `PROM_TEXTFILE` to also export
+Prometheus metrics via the node_exporter textfile collector
+(`mailu_queue_total`, `mailu_bounce_defer_rate_percent`,
+`mailu_spam_block_rejections`, …).
+
+`mailu-queue-report.sh` prints a weekly-review summary: recent alerts, noisiest
+SASL senders, and the samples where spam/blacklist or rate-limit hits appeared.
+
+## How it reads the queue
+
+It prefers `postqueue -j` (JSON, Postfix ≥ 3.1 — what Mailu ships), which gives
+robust per-message sender/recipient data, and falls back to parsing the classic
+`postqueue -p` text listing. Log windows come from `docker compose logs --since`.
+
+> **Note:** per-message attribution requires the messages to still be in the
+> queue / recent logs. If the container log driver rotates aggressively, widen
+> the retention or reduce the sample `WINDOW`. Deferred-queue counts in the text
+> (`-p`) fallback are approximate; the JSON path is exact.
+
+## Prevention (defence in depth)
+
+This tracker *detects*. To *prevent*, also: enforce strong/unique passwords,
+enable Mailu's per-user message rate limits (Admin → user settings), require
+2FA on webmail/admin, and restrict who may relay. The tracker tells you when
+those controls are being tested.
+
+## Repository layout
+
+```
+bin/mailu-queue-watch.sh      main watcher (config-driven, testable)
+bin/mailu-queue-report.sh     weekly-review summary
+lib/parse-queue.awk           postqueue -j / -p parser (mawk-compatible)
+etc/mailu-queue-watch.conf.example   documented config template
+systemd/                      oneshot service + 5-minute timer
+install.sh                    install / --uninstall
+docs/                         signals, thresholds, incident response
+tests/                        fixture-driven end-to-end tests (no Docker needed)
+```
+
+## Development & tests
+
+The watcher abstracts its data sources behind `QUEUE_SOURCE_CMD` /
+`LOG_SOURCE_CMD`, so the test suite feeds it fixtures and asserts on the metrics,
+severity, alerting and cooldown — no Mailu required:
+
+```bash
+tests/run.sh          # runs shellcheck + end-to-end scenarios
+```
+
+Regenerate fixtures with `tests/gen-fixtures.sh`.
