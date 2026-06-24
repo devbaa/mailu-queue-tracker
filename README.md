@@ -212,6 +212,7 @@ bin/mailu-queue-watch.sh      main watcher (config-driven, testable)
 bin/mailu-queue-report.sh     weekly-review summary
 bin/mailu-front-ips.sh        real client IPs from the front log (deanonymise XCLIENT)
 bin/mailu-queue-drain.sh      delete/hold queued mail for one sender or recipient
+bin/mailu-alert-test.sh       send a timestamped test alert (verify Telegram/Slack)
 lib/parse-queue.awk           postqueue -j / -p parser (mawk-compatible)
 lib/parse-front.awk           front-log IP/user correlation (mawk-compatible)
 lib/match-queue.awk           exact sender/recipient -> queue_id matcher (mawk-compatible)
