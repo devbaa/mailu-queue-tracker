@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# install.sh -- install (or remove) mailu-queue-tracker on a Mailu host.
+# install.sh -- install / update / remove mailu-queue-tracker on a Mailu host.
 #
-#   sudo ./install.sh              # install + enable the 5-minute timer
-#   sudo ./install.sh --no-enable  # install but don't start the timer yet
-#   sudo ./install.sh --uninstall  # remove everything except your config/logs
-
+#   sudo ./install.sh              # install or update, enable the 5-minute timer
+#   sudo ./install.sh --no-enable  # install/update but do not start the timer
+#   sudo ./install.sh --uninstall  # remove scripts/units; keep config and logs
+#   sudo ./install.sh --purge      # remove everything incl. config, state, logs
+#
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -17,10 +18,14 @@ STATE_DIR="/var/lib/mailu-queue-watch"
 
 ENABLE=1
 UNINSTALL=0
+PURGE=0
+LOG_FILE="/var/log/mailu-queue-watch.log"
+ALERT_FILE="/var/log/mailu-queue-alerts.log"
 for a in "$@"; do
     case "$a" in
         --no-enable) ENABLE=0 ;;
         --uninstall) UNINSTALL=1 ;;
+        --purge) UNINSTALL=1; PURGE=1 ;;
         -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$a" >&2; exit 2 ;;
     esac
@@ -39,7 +44,14 @@ if [ "$UNINSTALL" -eq 1 ]; then
     rm -f "$SYSTEMD_DIR/mailu-queue-watch.service" "$SYSTEMD_DIR/mailu-queue-watch.timer"
     if have_systemd; then systemctl daemon-reload || true; fi
     echo "Removed binaries, library and systemd units."
-    echo "Left in place (remove manually if desired): $CONFIG, logs, $STATE_DIR"
+    if [ "$PURGE" -eq 1 ]; then
+        rm -f "$CONFIG" "$LOG_FILE" "$ALERT_FILE"
+        rm -rf "$STATE_DIR"
+        echo "Purged config, default logs and state ($CONFIG, $STATE_DIR)."
+        echo "If you set custom LOG_FILE/ALERT_FILE/STATE_DIR paths, remove those manually."
+    else
+        echo "Left in place (remove manually, or use --purge): $CONFIG, logs, $STATE_DIR"
+    fi
     exit 0
 fi
 

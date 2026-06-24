@@ -63,7 +63,11 @@ tail -f /var/log/mailu-queue-watch.log /var/log/mailu-queue-alerts.log
 ```
 
 `install.sh --uninstall` removes the scripts and units (leaving your config and
-logs). On hosts without systemd, run `mailu-queue-watch.sh` from cron instead.
+logs); `--purge` removes everything. On hosts without systemd, run
+`mailu-queue-watch.sh` from cron instead.
+
+📖 **Full guide:** [docs/install.md](docs/install.md) covers installation, how it
+works, day-to-day usage, updating, uninstalling, cron, and troubleshooting.
 
 ## Configuration
 
@@ -192,7 +196,8 @@ lib/parse-queue.awk           postqueue -j / -p parser (mawk-compatible)
 lib/parse-front.awk           front-log IP/user correlation (mawk-compatible)
 etc/mailu-queue-watch.conf.example   documented config template
 systemd/                      oneshot service + 5-minute timer
-install.sh                    install / --uninstall
+install.sh                    install / update / --uninstall / --purge
+docs/install.md               install, usage, update, uninstall & troubleshooting
 docs/                         signals, thresholds, incident response
 SECURITY.md                   threat model: untrusted-data handling & secrets
 tests/                        fixture-driven end-to-end tests (no Docker needed)
