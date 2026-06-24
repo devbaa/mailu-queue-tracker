@@ -177,6 +177,18 @@ sudo mailu-queue-report.sh                # recent alerts, noisiest senders, hit
 sudo mailu-queue-report.sh --lines 100
 ```
 
+### Drain abusive mail from the queue
+
+Removing a compromised account doesn't clear its queued mail — drain it per
+address (exact match, dry-run first, confirm prompt):
+
+```bash
+sudo mailu-queue-drain.sh --dry-run noreply@mx.example.com   # count only
+sudo mailu-queue-drain.sh noreply@mx.example.com             # delete
+sudo mailu-queue-drain.sh --hold noreply@mx.example.com      # hold instead
+sudo mailu-queue-drain.sh -r victim@honeypot.example       # match by recipient
+```
+
 ### Find an attacker's source IP
 
 The `smtp` log only shows the front (XCLIENT); the real IP is in the front log:
