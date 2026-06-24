@@ -219,6 +219,7 @@ etc/mailu-queue-watch.conf.example   documented config template
 systemd/                      oneshot service + 5-minute timer
 install.sh                    install / update / --uninstall / --purge
 docs/install.md               install, usage, update, uninstall & troubleshooting
+docs/glossary.md              every metric/field defined
 docs/                         signals, thresholds, incident response
 SECURITY.md                   threat model: untrusted-data handling & secrets
 tests/                        fixture-driven end-to-end tests (no Docker needed)

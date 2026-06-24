@@ -169,6 +169,7 @@ time=… severity=critical queue_total=812 deferred_queue=640
 
 `severity`/`reasons` are the headline; `top_sasl*` and `bulk_senders` say *which*
 and *how many* credentials; `rate_limits`/`spam_blocks` are reputation events.
+Every field is defined in **[glossary.md](glossary.md)**.
 
 ### Weekly review
 
