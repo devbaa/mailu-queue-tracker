@@ -113,6 +113,8 @@ echo "T6: dry-run does not touch files"
 d="$WORK/t6"; mkdir -p "$d"; make_config "$d"
 out="$(run_incident "$d" --dry-run)"
 check "dry-run shows alert"  "$out" "ALERT (dry-run)"
+check "plain-language summary line" "$out" "sent 30 messages in 15m and 88% are failing"
+check "summary lists red flags"     "$out" "rate-limited, rejected as spam/blacklisted"
 if [ -f "$d/metrics.log" ]; then bad "dry-run wrote metrics.log"; else ok "dry-run wrote nothing"; fi
 
 echo "T7: text-format postqueue (-p) parsing path"
@@ -162,6 +164,20 @@ bad_ip="$(grep -rhoE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$FIX" \
     | grep -vE '^(10|127)\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^0\.0\.0\.0$' | sort -u || true)"
 if [ -z "$bad_ip" ]; then ok "no routable/real IPs in fixtures"
 else bad "non-reserved IP(s) in fixtures: $bad_ip"; fi
+
+echo "T11: mailu-queue-drain.sh exact match + apply (dry-run/capture)"
+DRAIN="$ROOT/bin/mailu-queue-drain.sh"
+qsrc="QUEUE_SOURCE_CMD=\"cat '$FIX/postqueue-incident.json'\""
+o="$(eval "$qsrc" bash "$DRAIN" --config /dev/null --dry-run noreply@example.com)"
+check "sender exact match = 60"  "$o" "Matched 60 message"
+o="$(eval "$qsrc" bash "$DRAIN" --config /dev/null --dry-run noreply@example)"
+check "no partial match"         "$o" "Matched 0 message"
+o="$(eval "$qsrc" bash "$DRAIN" --config /dev/null --dry-run --recipient customer1@example.com)"
+check "recipient exact match = 1" "$o" "Matched 1 message"
+capt="$WORK/ids"
+eval "$qsrc" DRAIN_APPLY_CMD="\"cat > '$capt'\"" bash "$DRAIN" --config /dev/null -y noreply@example.com >/dev/null
+got="$(grep -c . "$capt" 2>/dev/null || echo 0)"
+if [ "$got" -eq 60 ]; then ok "apply received all 60 ids"; else bad "apply got $got ids (expected 60)"; fi
 
 echo
 printf 'RESULT: %d passed, %d failed\n' "$pass" "$fail"

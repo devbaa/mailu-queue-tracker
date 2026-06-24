@@ -109,6 +109,8 @@ A sample critical alert:
 
 ```
 Mailu queue alert
+noreply@example.com sent 430 messages in 15m and 97% are failing — rate-limited, rejected as spam/blacklisted, 7 accounts sending at once.
+
 severity=critical
 reasons=sasl_sender_sent_gt_150 multiple_bulk_senders_gt_5 rate_limit_seen spam_blacklist_blocks_ge_5
 queue_total=812
@@ -139,6 +141,23 @@ which usernames authenticated from it — feed the result to your firewall /
 fail2ban. (If a compromised account shows *only* the front's own IP, the
 submissions came through the front and you need the front nginx logs, not the
 `smtp` ones — which is exactly when this helper earns its keep.)
+
+## Draining abusive mail from the queue
+
+Removing/disabling a compromised account stops new sending but leaves its mail
+in the queue (Postfix keeps retrying it to the honeypots). Clear it per address —
+**exact** match, dry-run first, with a confirm prompt:
+
+```bash
+mailu-queue-drain.sh --dry-run noreply@mx.example.com   # how many would go
+mailu-queue-drain.sh noreply@mx.example.com             # delete (asks to confirm)
+mailu-queue-drain.sh --hold noreply@mx.example.com      # hold instead (postsuper -H to release)
+mailu-queue-drain.sh -r victim@honeypot.example       # match by recipient instead
+```
+
+`example.com` won't match `noreply@mx.example.com` (the address must be exact), and
+it only ever touches the address you name, so legitimate forwarded mail sitting
+in the queue is left alone — safer than `postsuper -d ALL` on a multi-tenant host.
 
 ## Responding to an alert
 
@@ -192,12 +211,15 @@ metadata-only. Secrets stay in the `chmod 600` config (git-ignored). See
 bin/mailu-queue-watch.sh      main watcher (config-driven, testable)
 bin/mailu-queue-report.sh     weekly-review summary
 bin/mailu-front-ips.sh        real client IPs from the front log (deanonymise XCLIENT)
+bin/mailu-queue-drain.sh      delete/hold queued mail for one sender or recipient
 lib/parse-queue.awk           postqueue -j / -p parser (mawk-compatible)
 lib/parse-front.awk           front-log IP/user correlation (mawk-compatible)
+lib/match-queue.awk           exact sender/recipient -> queue_id matcher (mawk-compatible)
 etc/mailu-queue-watch.conf.example   documented config template
 systemd/                      oneshot service + 5-minute timer
 install.sh                    install / update / --uninstall / --purge
 docs/install.md               install, usage, update, uninstall & troubleshooting
+docs/glossary.md              every metric/field defined
 docs/                         signals, thresholds, incident response
 SECURITY.md                   threat model: untrusted-data handling & secrets
 tests/                        fixture-driven end-to-end tests (no Docker needed)

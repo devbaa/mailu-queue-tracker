@@ -60,8 +60,18 @@ external addresses, and consider whether submission auth was used from off-host.
 
 ## 3. Drain the bad mail from the queue
 
-Inspect first, then act. **Look before you delete** — make sure you're removing
-the abusive sender's mail, not legitimate backlog.
+The quickest safe way is the bundled helper — it matches one address **exactly**
+(so `example.com` can't catch `noreply@mx.example.com`), dry-runs first, and never
+touches other senders:
+
+```bash
+mailu-queue-drain.sh --dry-run noreply@mx.example.com   # count first
+mailu-queue-drain.sh noreply@mx.example.com             # delete (confirms)
+mailu-queue-drain.sh --hold  noreply@mx.example.com     # or hold as evidence
+```
+
+Or do it by hand. **Look before you delete** — make sure you're removing the
+abusive sender's mail, not legitimate backlog.
 
 ```bash
 # what's queued, by sender

@@ -169,12 +169,25 @@ time=… severity=critical queue_total=812 deferred_queue=640
 
 `severity`/`reasons` are the headline; `top_sasl*` and `bulk_senders` say *which*
 and *how many* credentials; `rate_limits`/`spam_blocks` are reputation events.
+Every field is defined in **[glossary.md](glossary.md)**.
 
 ### Weekly review
 
 ```bash
 sudo mailu-queue-report.sh                # recent alerts, noisiest senders, hits
 sudo mailu-queue-report.sh --lines 100
+```
+
+### Drain abusive mail from the queue
+
+Removing a compromised account doesn't clear its queued mail — drain it per
+address (exact match, dry-run first, confirm prompt):
+
+```bash
+sudo mailu-queue-drain.sh --dry-run noreply@mx.example.com   # count only
+sudo mailu-queue-drain.sh noreply@mx.example.com             # delete
+sudo mailu-queue-drain.sh --hold noreply@mx.example.com      # hold instead
+sudo mailu-queue-drain.sh -r victim@honeypot.example       # match by recipient
 ```
 
 ### Find an attacker's source IP
