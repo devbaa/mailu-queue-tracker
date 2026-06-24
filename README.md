@@ -1,3 +1,8 @@
+> ⚠️ **AI-generated code.** This project was written by Claude Code (Anthropic).
+> It ships with automated tests and shellcheck, but **review it yourself before
+> running it in production** — especially the commands that delete queued mail or
+> interact with your mail server. Use at your own risk.
+
 # mailu-queue-tracker
 
 Early detection of **compromised-account / abusive bulk SMTP** on a
