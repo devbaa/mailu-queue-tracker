@@ -65,14 +65,18 @@ read -r -a _compose <<<"$COMPOSE_CMD"
 
 get_queue() {
     if [ -n "${QUEUE_SOURCE_CMD:-}" ]; then eval "$QUEUE_SOURCE_CMD"; return; fi
-    ( cd "$COMPOSE_DIR" 2>/dev/null && "${_compose[@]}" exec -T "$SMTP_SERVICE" postqueue -j ) 2>/dev/null || true
+    ( cd "$COMPOSE_DIR" && "${_compose[@]}" exec -T "$SMTP_SERVICE" postqueue -j )
 }
 apply() {   # reads queue ids on stdin, deletes/holds them in the smtp container
     if [ -n "${DRAIN_APPLY_CMD:-}" ]; then eval "$DRAIN_APPLY_CMD"; return; fi
-    ( cd "$COMPOSE_DIR" 2>/dev/null && "${_compose[@]}" exec -T "$SMTP_SERVICE" postsuper "$OP" - ) 2>/dev/null
+    ( cd "$COMPOSE_DIR" && "${_compose[@]}" exec -T "$SMTP_SERVICE" postsuper "$OP" - )
 }
 
-ids="$(get_queue | awk -f "$MATCH_AWK" -v addr="$ADDR" -v field="$FIELD")"
+if ! queue_raw="$(get_queue 2>&1)"; then
+    printf 'fatal: could not read the Mailu/Postfix queue\n%s\n' "$queue_raw" >&2
+    exit 4
+fi
+ids="$(printf '%s\n' "$queue_raw" | awk -f "$MATCH_AWK" -v addr="$ADDR" -v field="$FIELD")"
 n=0
 [ -n "$ids" ] && n="$(printf '%s\n' "$ids" | grep -c .)"
 
@@ -86,5 +90,8 @@ if [ "$ASSUME_YES" -ne 1 ]; then
     case "$ans" in y|Y|yes|YES) ;; *) echo "aborted"; exit 0 ;; esac
 fi
 
-printf '%s\n' "$ids" | apply
+if ! printf '%s\n' "$ids" | apply; then
+    printf 'fatal: failed to %s matched queue message(s)\n' "$OP_WORD" >&2
+    exit 5
+fi
 printf 'Done (%s %d message(s) from %s).\n' "$OP_WORD" "$n" "$ADDR"
