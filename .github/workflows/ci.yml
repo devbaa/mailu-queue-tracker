@@ -9,9 +9,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install shellcheck and mawk
         run: sudo apt-get update && sudo apt-get install -y shellcheck mawk
+
       - name: Lint shell scripts
-        run: shellcheck -s bash bin/*.sh install.sh tests/*.sh
+        run: |
+          bash -n bin/*.sh install.sh tests/*.sh
+          shellcheck -s bash bin/*.sh install.sh tests/*.sh
+
+      - name: Check installer command manifest
+        run: |
+          for file in bin/*.sh; do
+            name="$(basename "$file")"
+            grep -Fq "$name" install.sh || {
+              echo "install.sh is missing $name"
+              exit 1
+            }
+          done
+
       - name: Run test suite
         run: bash tests/run.sh

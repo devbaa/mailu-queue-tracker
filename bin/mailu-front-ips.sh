@@ -4,8 +4,7 @@
 # log, with the usernames that authenticated from each.
 #
 # The `smtp` container only ever logs the front (XCLIENT), so a compromised
-# account's true source IP lives in the front log. Use this to find it, then
-# firewall / fail2ban it.
+# account's true source IP lives in the front log. Use this to investigate it.
 #
 # Usage:
 #   mailu-front-ips.sh [--config PATH] [--since 2h] [--user REGEX]
@@ -60,16 +59,24 @@ done
 [ -f "$CONFIG" ] && . "$CONFIG"
 [ -n "$SINCE" ] || SINCE="${WINDOW:-24h}"
 
+case "$TOP" in
+    ''|*[!0-9]*) printf 'invalid --top value: %s\n' "$TOP" >&2; exit 2 ;;
+esac
+[ "$TOP" -gt 0 ] || { printf '%s\n' '--top must be greater than 0' >&2; exit 2; }
+
 PARSE_FRONT_AWK="$(_find_lib parse-front.awk)" || {
     printf 'fatal: parse-front.awk not found (set MQW_LIB_DIR)\n' >&2; exit 3; }
 
 read -r -a _compose <<<"$COMPOSE_CMD"
 get_front_logs() {
     if [ -n "${FRONT_LOG_SOURCE_CMD:-}" ]; then eval "$FRONT_LOG_SOURCE_CMD"; return; fi
-    ( cd "$COMPOSE_DIR" 2>/dev/null && "${_compose[@]}" logs --since="$SINCE" "$FRONT_SERVICE" ) 2>/dev/null || true
+    ( cd "$COMPOSE_DIR" && "${_compose[@]}" logs --since="$SINCE" "$FRONT_SERVICE" )
 }
 
-logs="$(get_front_logs)"
+if ! logs="$(get_front_logs 2>&1)"; then
+    printf 'fatal: could not read Mailu front logs\n%s\n' "$logs" >&2
+    exit 4
+fi
 if [ -n "$USER_RE" ]; then
     logs="$(printf '%s\n' "$logs" | grep -Ei -- "$USER_RE" || true)"
 fi

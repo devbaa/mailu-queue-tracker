@@ -15,12 +15,22 @@ LIB_DIR="/usr/local/lib/mailu-queue-watch"
 SYSTEMD_DIR="/etc/systemd/system"
 CONFIG="/etc/mailu-queue-watch.conf"
 STATE_DIR="/var/lib/mailu-queue-watch"
+LOG_FILE="/var/log/mailu-queue-watch.log"
+ALERT_FILE="/var/log/mailu-queue-alerts.log"
+
+# Keep one manifest for both install and uninstall so helper commands cannot be
+# added to one path and forgotten in the other.
+SCRIPTS=(
+    mailu-queue-watch.sh
+    mailu-queue-report.sh
+    mailu-front-ips.sh
+    mailu-queue-drain.sh
+    mailu-alert-test.sh
+)
 
 ENABLE=1
 UNINSTALL=0
 PURGE=0
-LOG_FILE="/var/log/mailu-queue-watch.log"
-ALERT_FILE="/var/log/mailu-queue-alerts.log"
 for a in "$@"; do
     case "$a" in
         --no-enable) ENABLE=0 ;;
@@ -38,8 +48,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
     if have_systemd; then
         systemctl disable --now mailu-queue-watch.timer 2>/dev/null || true
     fi
-    rm -f "$SBIN_DIR/mailu-queue-watch.sh" "$SBIN_DIR/mailu-queue-report.sh" \
-          "$SBIN_DIR/mailu-front-ips.sh"
+    for s in "${SCRIPTS[@]}"; do
+        rm -f "$SBIN_DIR/$s"
+    done
     rm -rf "$LIB_DIR"
     rm -f "$SYSTEMD_DIR/mailu-queue-watch.service" "$SYSTEMD_DIR/mailu-queue-watch.timer"
     if have_systemd; then systemctl daemon-reload || true; fi
@@ -56,8 +67,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 echo "Installing scripts to $SBIN_DIR ..."
-for s in "$SRC"/bin/*.sh; do
-    install -m 0755 "$s" "$SBIN_DIR/$(basename "$s")"
+for s in "${SCRIPTS[@]}"; do
+    install -m 0755 "$SRC/bin/$s" "$SBIN_DIR/$s"
 done
 
 echo "Installing parsers to $LIB_DIR ..."
@@ -78,7 +89,7 @@ install -d -m 0750 "$STATE_DIR"
 if have_systemd; then
     echo "Installing systemd units ..."
     install -m 0644 "$SRC/systemd/mailu-queue-watch.service" "$SYSTEMD_DIR/"
-    install -m 0644 "$SRC/systemd/mailu-queue-watch.timer"   "$SYSTEMD_DIR/"
+    install -m 0644 "$SRC/systemd/mailu-queue-watch.timer" "$SYSTEMD_DIR/"
     systemctl daemon-reload
     if [ "$ENABLE" -eq 1 ]; then
         systemctl enable --now mailu-queue-watch.timer
@@ -92,8 +103,8 @@ fi
 
 cat <<EOF
 
-Done. Next steps:
-  1. Edit $CONFIG  (COMPOSE_DIR, thresholds, Telegram/Slack).
-  2. Test once:    mailu-queue-watch.sh --config $CONFIG --print
-  3. Watch:        tail -f /var/log/mailu-queue-watch.log /var/log/mailu-queue-alerts.log
+Done.
+  Config: $CONFIG
+  Check:  mailu-queue-watch.sh --config $CONFIG --print
+  Logs:   tail -f $LOG_FILE $ALERT_FILE
 EOF
