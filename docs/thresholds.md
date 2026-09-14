@@ -1,76 +1,96 @@
-# Thresholds & tuning
+# Thresholds and tuning
 
-Each signal has a **warning** and a **critical** level. Crossing `*_WARN` raises
-a warning; crossing `*_CRIT` raises a critical. The overall `severity` is the
-highest level any signal reached, and `reasons=` lists every level that fired.
+The watcher has warning and critical thresholds for each volume signal. For the configurable `*_WARN` and `*_CRIT` values, the implementation fires when the observed value is **greater than** the configured number. For example, `QUEUE_WARN=200` warns at 201 queued messages, not 200.
 
-Set all of these in `/etc/mailu-queue-watch.conf`.
+The overall `severity` is the highest level reached by any signal. `reasons=` records every signal that fired.
 
-## Shipped defaults (busy server)
+Configure thresholds in `/etc/mailu-queue-watch.conf`.
 
-```
-QUEUE_WARN=200            QUEUE_CRIT=500          # total queued messages
-DEFERRED_WARN=100         DEFERRED_CRIT=300       # deferred queue
-SENDER_SENT_WARN=50       SENDER_SENT_CRIT=150    # SASL msgs by one user in WINDOW
-BULK_SENDER_MSGS=50                               # a sender >= this in WINDOW is "bulk-like"
-MULTI_SENDER_WARN=3       MULTI_SENDER_CRIT=5     # this many bulk-like senders at once
-SENDER_QUEUE_WARN=100     SENDER_QUEUE_CRIT=300   # msgs queued by one envelope sender
-RCPT_DOMAINS_WARN=25      RCPT_DOMAINS_CRIT=50    # distinct rcpt domains, one sender
-BOUNCE_DEFER_RATE_WARN=20 BOUNCE_DEFER_RATE_CRIT=40   # percent over WINDOW
-SPAM_BLOCK_WARN=1         SPAM_BLOCK_CRIT=5       # remote spam/blacklist hits in WINDOW
-```
+## Default profile
 
-Plus two signals with fixed levels:
+```bash
+QUEUE_WARN=200
+QUEUE_CRIT=500
 
-- **Any** rate-limit rejection (`rate_limits > 0`) ⇒ **critical**. Postfix/Mailu
-  only throttles when something is sending abnormally fast.
-- `WINDOW` is the sampling window for all log-based rates (default `15m`); the
-  timer runs every 5 minutes, so windows overlap — each run is an independent
-  point-in-time "in the last 15 minutes" measurement.
+DEFERRED_WARN=100
+DEFERRED_CRIT=300
 
-## Small / transactional servers
+SENDER_SENT_WARN=50
+SENDER_SENT_CRIT=150
 
-The defaults are **far too high** for a low-volume server. If you normally send
-a handful of messages an hour, a compromised account sending 40/15min would slip
-under `SENDER_SENT_WARN=50`. Scale the per-sender and queue numbers down to a
-small multiple of your real peak. A reasonable starting point:
+BULK_SENDER_MSGS=50
+MULTI_SENDER_WARN=3
+MULTI_SENDER_CRIT=5
 
-```
-QUEUE_WARN=20             QUEUE_CRIT=50
-DEFERRED_WARN=10          DEFERRED_CRIT=30
-SENDER_SENT_WARN=10       SENDER_SENT_CRIT=30
-BULK_SENDER_MSGS=10       MULTI_SENDER_WARN=2     MULTI_SENDER_CRIT=3
-SENDER_QUEUE_WARN=20      SENDER_QUEUE_CRIT=50
-RCPT_DOMAINS_WARN=10      RCPT_DOMAINS_CRIT=20
-BOUNCE_DEFER_RATE_WARN=20 BOUNCE_DEFER_RATE_CRIT=40
-SPAM_BLOCK_WARN=1         SPAM_BLOCK_CRIT=5
+SENDER_QUEUE_WARN=100
+SENDER_QUEUE_CRIT=300
+
+RCPT_DOMAINS_WARN=25
+RCPT_DOMAINS_CRIT=50
+
+BOUNCE_DEFER_RATE_WARN=20
+BOUNCE_DEFER_RATE_CRIT=40
+
+SPAM_BLOCK_WARN=1
+SPAM_BLOCK_CRIT=5
 ```
 
-## How to tune in one week
+`BULK_SENDER_MSGS` is different from the warning/critical pairs: a sender is considered bulk-like when its volume is **greater than or equal to** this value. `MULTI_SENDER_WARN` and `MULTI_SENDER_CRIT` are then evaluated with the normal strict `>` threshold rule.
 
-1. Install and run in **alert-only** mode (the default — no containment).
-2. After ~7 days, look at your real baseline:
-   ```bash
-   mailu-queue-report.sh          # peak per-sender volume, noisiest senders
-   grep severity=warning /var/log/mailu-queue-alerts.log | wc -l
-   ```
-3. Raise any threshold that fires on normal traffic to just above your observed
-   peak; lower any that never fires when you *know* volume was high.
-4. Keep the two "hard" criticals (rate-limit seen, spam/blacklist ≥ crit) — they
-   are reputation events, not volume noise, and rarely false-positive.
+Spam-block thresholds are also inclusive: `SPAM_BLOCK_WARN=1` warns on the first matching rejection, and `SPAM_BLOCK_CRIT=5` becomes critical at five matching rejections.
+
+Any detected rate-limit rejection is currently critical regardless of the configurable volume thresholds.
+
+`WINDOW` controls the log sampling window, defaulting to `15m`. The systemd timer runs every five minutes, so adjacent samples normally overlap.
+
+## Small transactional servers
+
+The defaults are intended for a relatively busy server and may be too high for low-volume installations. A smaller starting profile might be:
+
+```bash
+QUEUE_WARN=20
+QUEUE_CRIT=50
+DEFERRED_WARN=10
+DEFERRED_CRIT=30
+SENDER_SENT_WARN=10
+SENDER_SENT_CRIT=30
+BULK_SENDER_MSGS=10
+MULTI_SENDER_WARN=2
+MULTI_SENDER_CRIT=3
+SENDER_QUEUE_WARN=20
+SENDER_QUEUE_CRIT=50
+RCPT_DOMAINS_WARN=10
+RCPT_DOMAINS_CRIT=20
+BOUNCE_DEFER_RATE_WARN=20
+BOUNCE_DEFER_RATE_CRIT=40
+SPAM_BLOCK_WARN=1
+SPAM_BLOCK_CRIT=5
+```
+
+Treat this only as a starting point. Tune from real traffic rather than assuming one profile is correct for every Mailu installation.
+
+## Tuning workflow
+
+Run the watcher without automatic containment and review normal traffic first:
+
+```bash
+mailu-queue-report.sh
+grep 'severity=warning' /var/log/mailu-queue-alerts.log | wc -l
+```
+
+Raise thresholds that repeatedly classify normal traffic as abusive. Lower thresholds that are clearly too permissive for the server's normal volume. Keep reputation-related signals such as spam-block responses and rate-limit events under separate scrutiny because they mean something different from simple queue growth.
 
 ## Reason strings
 
-These appear in `reasons=` and in alert bodies, so you can alert/route on them:
-
-| Reason | Signal |
+| Reason | Meaning |
 | --- | --- |
-| `queue_total_gt_N` | total queue size |
-| `deferred_queue_gt_N` | deferred queue size |
-| `sasl_sender_sent_gt_N` | one SASL user's send volume in WINDOW |
-| `multiple_bulk_senders_gt_N` | N distinct SASL users each sending bulk volume at once |
-| `sender_queue_backlog_gt_N` | one envelope sender's queued backlog |
-| `rcpt_domain_fanout_gt_N` | one sender's distinct recipient domains |
-| `bounce_defer_rate_pct_gt_N` | bounce+defer percentage |
-| `rate_limit_seen` | any rate-limit rejection (always critical) |
-| `spam_blacklist_terms_seen` / `spam_blacklist_blocks_ge_N` | remote spam/blacklist replies |
+| `queue_total_gt_N` | total queue size exceeded `N` |
+| `deferred_queue_gt_N` | deferred queue size exceeded `N` |
+| `sasl_sender_sent_gt_N` | one SASL user's volume exceeded `N` in `WINDOW` |
+| `multiple_bulk_senders_gt_N` | count of bulk-like SASL users exceeded `N` |
+| `sender_queue_backlog_gt_N` | one envelope sender's backlog exceeded `N` |
+| `rcpt_domain_fanout_gt_N` | one sender's distinct recipient-domain count exceeded `N` |
+| `bounce_defer_rate_pct_gt_N` | bounce/defer percentage exceeded `N` |
+| `rate_limit_seen` | at least one rate-limit rejection was detected |
+| `spam_blacklist_terms_seen` | spam/blocklist rejection count reached the warning threshold |
+| `spam_blacklist_blocks_ge_N` | spam/blocklist rejection count reached the critical threshold |
