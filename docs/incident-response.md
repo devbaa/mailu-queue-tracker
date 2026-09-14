@@ -1,137 +1,84 @@
 # Incident response
 
-What to do when the tracker fires a critical alert that looks like a compromised
-account. Commands assume you are in your Mailu compose directory
-(`cd /opt/mailu`).
+Use this when an alert looks like compromised-account or abusive SMTP activity.
 
-## 1. Confirm it's abuse, not a transient hiccup
+## 1. Identify the account
 
-Look at the alert's `reasons=` and the snapshot the watcher saved under
-`/var/lib/mailu-queue-watch/snapshots/<timestamp>/`. Real compromise usually
-shows **several** of: a single `top_sasl_sender` spiking, remote
-`spam/blacklist/blocked` replies, `rate_limit_seen`, a high
-`bounce_defer_rate`, and one sender fanning out across many recipient domains.
+Start with the alert and recent watcher output. Pay particular attention to:
 
-A single deferred spike with **no** spam/rate-limit signal and a *normal* top
-SASL sender is more likely a flaky remote MX — watch, don't act.
+- `top_sasl_sender`
+- `top_sasl_count`
+- `rate_limit_seen`
+- spam/blocklist rejection reasons
+- sender queue backlog and recipient-domain fan-out
 
-```bash
-# who is authenticating and how much, right now
-docker compose logs --since=30m smtp | grep -oE 'sasl_username=[^,[:space:]]+' \
-  | cut -d= -f2 | sort | uniq -c | sort -nr | head
+A single queue spike is not enough by itself to prove account compromise.
 
-# what remote servers are saying
-docker compose logs --since=30m smtp | grep -Ei 'spam|blacklist|blocked|rate' | tail
-```
+## 2. Stop new submissions
 
-## 2. Contain the compromised account (do this manually first)
+Disable the affected Mailu account or rotate its credentials using your normal Mailu administration process.
 
-Identify the account from `top_sasl_sender`, then **disable it / rotate its
-password** through your normal Mailu admin process:
+Do this before relying on queue cleanup. Deleting queued mail does not stop an account from submitting new messages.
 
-- **Mailu admin UI:** Users → the account → disable, or set "Enable" off, and
-  reset the password. Disabling submission stops further sending immediately.
-- **CLI:** `docker compose exec admin flask mailu user ...` per your Mailu
-  version, or change the password in the UI.
+## 3. Inspect the queue
 
-Rotating the password kills the attacker's authenticated session for that
-credential. If several `noreply@…`-style accounts are implicated, treat the
-shared origin (leaked list, reused password) as the root cause.
-
-### Find the source IP
-
-The `smtp` log shows only the front (XCLIENT), so get the real client IP from
-the front log:
+Dry-run the exact sender address first:
 
 ```bash
-mailu-front-ips.sh --since 6h --user noreply@   # IPs + accounts, suspect only
+sudo mailu-queue-drain.sh --dry-run user@example.com
 ```
 
-Then block it (host firewall or fail2ban):
+The helper uses exact, case-insensitive envelope-address matching. It exits with an error if the Postfix queue cannot be read, rather than reporting a misleading zero-match result.
+
+## 4. Delete or hold matching mail
+
+Delete matching queued messages:
 
 ```bash
-# example: drop a single abusive source at the host
-iptables -I INPUT -s 203.0.113.66 -j DROP
+sudo mailu-queue-drain.sh user@example.com
 ```
 
-If the suspect account shows **only the front's own IP**, the abuse came through
-the front — pull `docker compose logs front` directly for that window to see the
-external addresses, and consider whether submission auth was used from off-host.
-
-## 3. Drain the bad mail from the queue
-
-The quickest safe way is the bundled helper — it matches one address **exactly**
-(so `example.com` can't catch `noreply@mx.example.com`), dry-runs first, and never
-touches other senders:
+Or hold them instead:
 
 ```bash
-mailu-queue-drain.sh --dry-run noreply@mx.example.com   # count first
-mailu-queue-drain.sh noreply@mx.example.com             # delete (confirms)
-mailu-queue-drain.sh --hold  noreply@mx.example.com     # or hold as evidence
+sudo mailu-queue-drain.sh --hold user@example.com
 ```
 
-Or do it by hand. **Look before you delete** — make sure you're removing the
-abusive sender's mail, not legitimate backlog.
+Recipient matching is available when that is the safer discriminator:
 
 ```bash
-# what's queued, by sender
-docker compose exec -T smtp postqueue -j \
-  | grep -oE '"sender": *"[^"]*"' | sort | uniq -c | sort -nr | head
-
-# delete only the compromised sender's queued mail (example sender)
-docker compose exec -T smtp sh -c \
-  'postqueue -j | grep -F "\"sender\": \"noreply@example.com\"" \
-   | grep -oE "\"queue_id\": *\"[^\"]+\"" | cut -d\" -f4 | postsuper -d -'
-
-# flush remaining (legitimate) deferred mail once the abuser is locked out
-docker compose exec -T smtp postqueue -f
+sudo mailu-queue-drain.sh --dry-run --recipient victim@example.com
+sudo mailu-queue-drain.sh --recipient victim@example.com
 ```
 
-`postsuper -d ALL` deletes the **entire** queue — only use it if you're certain
-everything queued is abusive.
+Avoid `postsuper -d ALL` on a multi-tenant server unless deleting the entire queue is explicitly intended.
 
-## 4. Reputation cleanup
+## 5. Inspect source IPs
 
-Heavy honeypot sending can get your IP/domain listed. After containment:
-
-- Check your sending IP on the major blocklists it was rejected by (the alert's
-  remote replies name them — Spamhaus, Barracuda, etc.) and use their delisting
-  forms once you've stopped the abuse.
-- Verify SPF/DKIM/DMARC are intact so legitimate mail keeps authenticating.
-
-## 5. Automatic containment — only after a week of clean alerting
-
-Start alert-only. Once thresholds are tuned and you trust them, you can wire
-`ALERT_COMMAND` to take action. Bias toward **safe** actions:
-
-**Safe (recommended):**
-- Alert (Telegram/Slack/email)
-- Snapshot the queue + logs *(done automatically on every alert)*
-- Record top senders and sample queue IDs
-
-**Risky (manual, or only with high-confidence rules + a human in the loop):**
-- Deleting deferred mail
-- Stopping the `smtp` container (takes down *all* mail)
-- Firewalling outbound port 25
-- Disabling users automatically
-
-A defensible automatic rule, if you want one: **only** when a single SASL user
-exceeds the critical send threshold **and** spam/blacklist blocks are present
-(i.e. `reasons` contains both `sasl_sender_sent_gt_*` and a spam reason), disable
-*that one account* via the Mailu CLI from `ALERT_COMMAND`. Never auto-delete mail
-or stop the container.
-
-## 6. Weekly review
+Mailu's front proxy may contain the useful external client address:
 
 ```bash
-mailu-queue-report.sh                       # summary: alerts, top senders, hits
-
-# or by hand:
-grep 'severity=' /var/log/mailu-queue-alerts.log | tail -50
-grep '^top_sasl ' /var/log/mailu-queue-watch.log | sort | uniq -c | sort -nr | head -30
-grep -E 'spam_blocks_[^ ]*=[1-9]' /var/log/mailu-queue-watch.log | tail -50
-grep -E 'rate_limits_[^ ]*=[1-9]' /var/log/mailu-queue-watch.log | tail -50
+sudo mailu-front-ips.sh --since 6h --user user@example.com
 ```
 
-Use the review to retune thresholds (see [thresholds.md](thresholds.md)) and to
-spot slow-burn abuse that stays just under the critical levels.
+Treat this as evidence for investigation. Decide on firewall or other network controls using the host's existing operational policy rather than copying a generic firewall command from this repository.
+
+## 6. Preserve evidence
+
+The watcher can save queue and recent log snapshots under:
+
+```text
+/var/lib/mailu-queue-watch/snapshots/
+```
+
+Preserve the relevant snapshot before deleting it if you need incident review or later forensic analysis. Snapshots contain mail metadata and server logs and should follow the host's retention and access policy.
+
+## 7. Review mail reputation and authentication
+
+After containment, review the remote rejection messages that triggered the alert and verify the server's normal mail-authentication configuration. If a specific blocklist or remote provider rejected the server, follow that provider's current remediation process.
+
+## Automatic containment
+
+The repository intentionally does not automatically disable users or delete queued mail. Those actions can affect legitimate tenants if a threshold is wrong or an incident is misclassified.
+
+Use `ALERT_COMMAND` for notification or carefully reviewed local automation. Keep destructive actions human-confirmed unless you have a separate, tested policy for them.
