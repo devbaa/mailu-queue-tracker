@@ -145,23 +145,76 @@ url = "http://172.17.0.1:8765/rspamd";
 ```
 
 That address is reachable by containers on this host and by nothing else, as
-long as your firewall does not forward the port — which matters, because the
-collector is unauthenticated.
+long as your firewall does not forward the port.
 
-`mailut` verifies this rather than guessing: it asks Docker for the gateway
-addresses of the networks on this host and accepts the bind only if it is one
-of them (or loopback). **A private address is not sufficient** — your LAN or
-VPC address is private too, and binding there would expose the collector to
-every machine on that network. Anything else, including an address Docker
-cannot be queried about, is refused unless you pass `--allow-remote`
-deliberately.
+`mailut` verifies this rather than guessing. It asks Docker which networks the
+**antispam container** is attached to, inspects only those, and accepts the
+bind only if it is the gateway of one of them **and that network uses the
+bridge driver** (or if the bind is loopback). Three things it deliberately does
+*not* accept:
 
-If your Mailu network is not the default bridge, use that network's gateway
-address — any Docker gateway on the host is accepted:
+- **A merely private address.** Your LAN or VPC address is private too, and
+  binding there would expose the collector to every machine on that network.
+- **A `macvlan` or `ipvlan` gateway.** Those drivers put containers directly on
+  the physical network, and the gateway is normally your real upstream router —
+  Docker's own documentation uses examples like `--gateway=192.168.32.254`.
+  Docker does not apply to them the packet-filtering rules it creates for
+  bridge networks either.
+- **The gateway of an unrelated Docker project.** The antispam container cannot
+  reach it, so the collector would simply never receive anything.
+
+An address Docker cannot be queried about is refused rather than assumed safe.
+Anything else requires `--allow-remote` deliberately.
+
+If your Mailu network is not the default bridge, use that network's gateway.
+This prints exactly what `mailut` looks at:
 
 ```bash
-docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Gateway}}{{end}}' $(docker network ls -q)
+cd /opt/mailu
+docker inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{end}}' \
+  "$(docker compose ps -q antispam)" |
+  xargs docker network inspect \
+    -f '{{.Name}} {{.Driver}}{{range .IPAM.Config}} {{.Gateway}}{{end}}'
 ```
+
+Use a gateway from a line whose driver is `bridge`.
+
+### Require a token (recommended)
+
+Restricting the bind address controls *who can reach* the collector. It does
+not establish *who is posting*: another container on the same bridge could
+submit invented audit records. Since the point of the audit trail is to be
+evidence, give it a shared secret.
+
+```bash
+sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/mailut/collector.token'
+```
+
+```ini
+# /etc/mailut/mailut.conf
+[collector]
+token_file = /etc/mailut/collector.token
+```
+
+```text
+# in mailut-exporter.conf, alongside the url
+user = "mailut";
+password = "<the contents of /etc/mailut/collector.token>";
+```
+
+Rspamd's `metadata_exporter` cannot send an arbitrary header, but its HTTP
+backend does send Basic credentials built from `user`/`password`, and `mailut`
+accepts the token as the password. `Authorization: Bearer <token>` also works,
+which is easier with `curl`.
+
+The token file must be mode `0600`; `mailut` refuses to use one other accounts
+can read, and refuses to start if it is missing or empty rather than quietly
+accepting everything. `/health` stays unauthenticated so you can check wiring,
+but reports its counters only to authenticated callers. `mailut audit doctor`
+warns when no token is configured, and fails if the exporter's password does
+not match the one the collector expects — a mismatch that would otherwise show
+up only as silently missing evidence, since every export would be rejected
+with 401.
 
 Then restart the container and verify:
 

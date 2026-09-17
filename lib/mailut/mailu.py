@@ -22,7 +22,7 @@ ENV_QUEUE = "MAILUT_QUEUE_FILE"
 ENV_SMTP_LOG = "MAILUT_SMTP_LOG_FILE"
 ENV_FRONT_LOG = "MAILUT_FRONT_LOG_FILE"
 ENV_POSTSUPER_OUT = "MAILUT_POSTSUPER_OUT"
-ENV_DOCKER_GATEWAYS = "MAILUT_DOCKER_GATEWAYS"
+ENV_BRIDGE_GATEWAYS = "MAILUT_BRIDGE_GATEWAYS"
 
 
 class Mailu:
@@ -47,55 +47,94 @@ class Mailu:
             return [first]
         return ["docker"]
 
-    def network_gateways(self) -> tuple[set, str | None]:
-        """Gateway addresses of the Docker networks on this host.
-
-        These are the addresses Docker itself created as bridge gateways, so a
-        container can reach the host at one of them and nothing outside the host
-        can. That is a much narrower and more accurate test than "is it in an
-        RFC 1918 range" -- a host's LAN or VPC address is private too, and
-        binding an unauthenticated port to it exposes it to the whole network.
-
-        Returns ``(addresses, error)``; ``error`` is set when discovery could
-        not be performed, which is not the same as "no gateways exist".
-        """
-        fixture = os.environ.get(ENV_DOCKER_GATEWAYS)
-        if fixture is not None:
-            return {a.strip() for a in fixture.split(",") if a.strip()}, None
+    def service_container(self, service: str) -> tuple[str | None, str | None]:
+        """Container id of a running Compose service.  Returns (id, error)."""
         try:
-            listing = subprocess.run(
-                [*self.docker_argv, "network", "ls", "--quiet"],
-                capture_output=True, text=True, timeout=15, check=False,
+            proc = self._run(["ps", "-q", service], timeout=30)
+        except MailutError as exc:
+            return None, str(exc)
+        if proc.returncode != 0:
+            detail = (proc.stderr or "").strip().splitlines()
+            return None, detail[-1] if detail else f"docker compose ps {service} failed"
+        ids = proc.stdout.split()
+        if not ids:
+            return None, f"no running container for the {service} service"
+        return ids[0], None
+
+    def service_networks(self, service: str) -> tuple[set, str | None]:
+        """Names of the Docker networks ``service``'s container is attached to."""
+        container, error = self.service_container(service)
+        if error:
+            return set(), error
+        try:
+            proc = subprocess.run(
+                [*self.docker_argv, "inspect", "--format",
+                 "{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}",
+                 container],
+                capture_output=True, text=True, timeout=30, check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            return set(), f"cannot run docker: {exc}"
-        if listing.returncode != 0:
-            detail = (listing.stderr or "").strip().splitlines()
-            return set(), detail[-1] if detail else "docker network ls failed"
-        ids = listing.stdout.split()
-        if not ids:
+            return set(), f"cannot inspect the {service} container: {exc}"
+        if proc.returncode != 0:
+            detail = (proc.stderr or "").strip().splitlines()
+            return set(), detail[-1] if detail else f"docker inspect {service} failed"
+        return {name.strip() for name in proc.stdout.split() if name.strip()}, None
+
+    def service_bridge_gateways(self, service: str) -> tuple[set, str | None]:
+        """Gateways of the *bridge* networks attached to ``service``.
+
+        Both halves of that description matter, because this is what decides
+        whether an unauthenticated port is safe to open.
+
+        *bridge*: only the bridge driver gives the "reachable from containers on
+        this host, and from nothing off it" property.  A ``macvlan`` or
+        ``ipvlan`` network attaches containers straight to the physical LAN and
+        its configured gateway is typically the real upstream router -- Docker's
+        own documentation uses examples like ``--gateway=192.168.32.254`` -- and
+        Docker does not install the packet-filtering rules there that it
+        installs for bridge networks.  An overlay gateway spans hosts.  Treating
+        any of those as host-local would be wrong.
+
+        *attached to service*: a gateway belonging to some unrelated Docker
+        project on the same machine is no use either.  The antispam container
+        cannot reach it, so approving it would produce a collector that Rspamd
+        cannot post to.
+
+        Returns ``(addresses, error)``; ``error`` set means discovery could not
+        be performed, which is not the same as "no such gateway exists".
+        """
+        fixture = os.environ.get(ENV_BRIDGE_GATEWAYS)
+        if fixture is not None:
+            if fixture.startswith("!"):
+                return set(), fixture[1:] or "discovery unavailable"
+            return {a.strip() for a in fixture.split(",") if a.strip()}, None
+        networks, error = self.service_networks(service)
+        if error:
+            return set(), error
+        if not networks:
             return set(), None
         try:
-            inspect = subprocess.run(
+            proc = subprocess.run(
                 [*self.docker_argv, "network", "inspect", "--format",
-                 "{{range .IPAM.Config}}{{println .Gateway}}{{end}}", *ids],
+                 "{{.Driver}}{{range .IPAM.Config}} {{.Gateway}}{{end}}", *sorted(networks)],
                 capture_output=True, text=True, timeout=30, check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return set(), f"cannot inspect docker networks: {exc}"
-        if inspect.returncode != 0:
-            detail = (inspect.stderr or "").strip().splitlines()
+        if proc.returncode != 0:
+            detail = (proc.stderr or "").strip().splitlines()
             return set(), detail[-1] if detail else "docker network inspect failed"
         gateways = set()
-        for line in inspect.stdout.split():
-            candidate = line.strip()
-            if not candidate:
-                continue
-            try:
-                ipaddress.ip_address(candidate)
-            except ValueError:
-                continue
-            gateways.add(candidate)
+        for line in proc.stdout.splitlines():
+            fields = line.split()
+            if not fields or fields[0] != "bridge":
+                continue  # macvlan, ipvlan, overlay: not host-local
+            for candidate in fields[1:]:
+                try:
+                    ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue
+                gateways.add(candidate)
         return gateways, None
 
     # -- primitives ----------------------------------------------------------

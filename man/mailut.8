@@ -253,13 +253,28 @@ SMTP evidence Rspamd never sees. This is what
 .B mailut\-audit.service
 runs; logging goes to stdout and stderr, therefore to the journal.
 .IP
-The endpoint is unauthenticated, so the bind address is checked: a loopback
-address, or a host-local one such as the Docker bridge gateway that only
-containers on this host can reach, is accepted; a wildcard
-.RB ( 0.0.0.0 )
-or a publicly routable address is refused unless
+The bind address is checked before the socket is opened. A loopback address is
+accepted, as is the gateway of a Docker
+.B bridge
+network that the antispam container is attached to \(em an address reachable by
+containers on this host and by nothing else, provided the port is not
+forwarded. Anything else, including an address that cannot be verified, is
+refused unless
 .B \-\-allow\-remote
-is given.
+is given. See
+.B bind
+in
+.BR mailut.conf (5)
+for why a merely private address, a
+.BR macvlan / ipvlan
+gateway, or an unrelated project's bridge does not qualify.
+.IP
+If
+.B collector.token_file
+is set, a client must present the token to submit evidence; if it is not, the
+collector logs a warning at startup, because anything able to reach the port
+could otherwise forge audit records. An unusable token file is a startup
+failure, never a silent fallback to accepting everything.
 .B \-\-once
 performs exactly one log poll and exits, for diagnostics.
 .TP
@@ -631,15 +646,38 @@ Another lifecycle operation holds the lock.
 Mail metadata is sensitive. The database and the message store are mode 0600
 and 0700 and owned by root.
 .PP
-The collector is
-.B unauthenticated
-and binds to 127.0.0.1 by default. The Rspamd exporter runs inside a container
+The collector accepts audit evidence over HTTP, so it is protected at two
+levels, neither of which is sufficient alone.
+.PP
+.B Who can reach it.
+It binds to 127.0.0.1 by default. The Rspamd exporter runs inside a container
 and cannot reach the host's loopback, so the documented setup binds instead to
-the Docker bridge gateway \(em an address reachable by containers on this host
-and by nothing else, provided the port is not forwarded. A wildcard or publicly
-routable bind is refused unless
+the gateway of a Docker bridge network the antispam container is attached to
+\(em an address reachable by containers on this host and by nothing else,
+provided the port is not forwarded. That test is deliberately narrow: a merely
+private address may be a LAN or VPC address reachable by every machine on that
+network; a
+.B macvlan
+or
+.B ipvlan
+gateway is normally the real upstream router and is not covered by the packet
+filtering Docker applies to bridge networks; and an unrelated project's bridge
+is not reachable from Mailu at all. An address that cannot be verified is
+refused rather than assumed safe, as is a wildcard or publicly routable bind,
+unless
 .B \-\-allow\-remote
 is given deliberately. Request bodies are size-limited.
+.PP
+.B Who may submit.
+Set
+.B collector.token_file
+to require a shared token, presented as HTTP Basic credentials (what Rspamd's
+metadata_exporter can send) or as a Bearer header. Without it, any process that
+can reach the address above can post fabricated events into the audit trail,
+which defeats the purpose of keeping one. The token file must not be readable
+by other accounts. The unauthenticated
+.I /health
+endpoint exposes liveness only; its counters require the token.
 .PP
 Ingested values \(em senders, recipients, HELO names, subjects, Rspamd symbol
 options and Postfix rejection text \(em are chosen by the remote side. They are

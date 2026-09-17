@@ -17,14 +17,19 @@ application log file.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as _dt
+import hmac
 import json
 import logging
 import signal
 import sqlite3
+import stat
 import threading
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from . import scopes as scope_store
 from .db import Database
@@ -44,6 +49,76 @@ from .util import (
 log = logging.getLogger("mailut.collector")
 
 CURSOR_KEY = "smtp_log_cursor"
+
+# The shortest token we will accept.  A token this size is only reasonable if
+# it was generated randomly, which the documentation tells the operator to do.
+MIN_TOKEN_BYTES = 16
+
+
+def read_token(config) -> str | None:
+    """The shared ingestion token, or None when authentication is disabled.
+
+    The token file is a secret, so it must not be readable by anyone but its
+    owner: a group- or world-readable token is refused rather than used, since
+    quietly accepting it would make the endpoint look authenticated while the
+    secret sits where any local account can read it.
+    """
+    configured = config.get("collector", "token_file")
+    if not configured:
+        return None
+    path = Path(configured)
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise MailutError(f"cannot read collector.token_file {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise MailutError(f"collector.token_file {path} is not a regular file")
+    if info.st_mode & 0o077:
+        raise MailutError(
+            f"collector.token_file {path} is readable by other accounts "
+            f"(mode {info.st_mode & 0o777:04o}); run: chmod 600 {path}"
+        )
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise MailutError(f"cannot read collector.token_file {path}: {exc}") from exc
+    if not token:
+        raise MailutError(f"collector.token_file {path} is empty")
+    if len(token) < MIN_TOKEN_BYTES:
+        raise MailutError(
+            f"the token in {path} is only {len(token)} characters; use at least "
+            f"{MIN_TOKEN_BYTES} random ones (for example: openssl rand -hex 32)"
+        )
+    if any(ch.isspace() for ch in token):
+        raise MailutError(f"the token in {path} contains whitespace; it must be a single word")
+    return token
+
+
+def presented_token(header: str | None) -> str | None:
+    """The token an ``Authorization`` header carries, if we understand it.
+
+    Two schemes are accepted.  ``Bearer`` is what a human with curl will reach
+    for.  ``Basic`` is what Rspamd's metadata_exporter can actually send: its
+    http backend builds the header from the rule's ``user``/``password`` and
+    offers no way to set an arbitrary one, so the token travels as the
+    password and the username is not a secret.
+    """
+    if not header:
+        return None
+    scheme, _, rest = header.partition(" ")
+    rest = rest.strip()
+    if not rest:
+        return None
+    if scheme.lower() == "bearer":
+        return rest
+    if scheme.lower() == "basic":
+        try:
+            decoded = base64.b64decode(rest, validate=True).decode("utf-8", "replace")
+        except (binascii.Error, ValueError):
+            return None
+        _, sep, password = decoded.partition(":")
+        return password if sep else None
+    return None
 
 
 class Ingestor:
@@ -184,20 +259,51 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # keep journald readable
         log.debug("%s %s", self.address_string(), fmt % args)
 
-    def _reply(self, code: int, payload: dict) -> None:
+    def _reply(self, code: int, payload: dict, headers=()) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         try:
             self.wfile.write(body)
         except OSError:
             pass
 
+    def _authenticated(self) -> bool:
+        """True when the request carries the shared token, or none is required."""
+        expected = self.server.token
+        if expected is None:
+            return True
+        presented = presented_token(self.headers.get("Authorization"))
+        if presented is None:
+            return False
+        return hmac.compare_digest(presented, expected)
+
+    def _deny(self) -> None:
+        # Say which schemes work, but never echo what was presented.
+        log.warning("rejected unauthenticated ingest from %s", self.address_string())
+        self.server.ingestor.stats["unauthenticated"] = (
+            self.server.ingestor.stats.get("unauthenticated", 0) + 1
+        )
+        # The body was never read, so this connection cannot be reused.
+        self.close_connection = True
+        self._reply(401, {"error": "authentication required"}, headers=[
+            ("WWW-Authenticate", 'Basic realm="mailut", charset="UTF-8"'),
+        ])
+
     def do_GET(self):  # noqa: N802 - http.server API
         if self.path.rstrip("/") in ("/health", "/healthz"):
-            self._reply(200, {"status": "ok", "stats": self.server.ingestor.stats})
+            # Liveness stays open so the exporter and doctor can check wiring
+            # before a token is agreed, but the counters are only for callers
+            # that proved they belong here.
+            if self._authenticated():
+                self._reply(200, {"status": "ok", "auth": self.server.token is not None,
+                                  "stats": self.server.ingestor.stats})
+            else:
+                self._reply(200, {"status": "ok", "auth": True})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -205,6 +311,9 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path not in ("/", "/rspamd", "/events"):
             self._reply(404, {"error": "not found"})
+            return
+        if not self._authenticated():
+            self._deny()
             return
         limit = self.server.max_body_bytes
         try:
@@ -257,9 +366,10 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, ingestor: Ingestor, max_body_bytes: int):
+    def __init__(self, address, ingestor: Ingestor, max_body_bytes: int, token: str | None = None):
         self.ingestor = ingestor
         self.max_body_bytes = max_body_bytes
+        self.token = token
         super().__init__(address, _Handler)
 
     def handle_error(self, request, client_address):  # pragma: no cover
@@ -319,15 +429,19 @@ class LogPoller(threading.Thread):
 def assess_bind(config, mailu=None) -> dict:
     """Decide whether the configured bind address is safe to listen on.
 
-    The collector is unauthenticated, so the only question that matters is who
-    can reach it. Being in an RFC 1918 range does not answer that: a host's LAN
-    or VPC address is private and reachable from every other machine on that
-    network. What does answer it is whether the address is one Docker created
-    as a network gateway -- reachable by containers on this host, and by
-    nothing off it.
+    The question is who can reach the port. Being in an RFC 1918 range does not
+    answer it: a host's LAN or VPC address is private and reachable from every
+    other machine on that network. Nor does "some Docker network has this
+    gateway" answer it, because a macvlan or ipvlan gateway is usually the real
+    upstream router and an unrelated project's bridge is not reachable from
+    Mailu anyway.
+
+    What does answer it is whether the address is the gateway of a *bridge*
+    network that the *antispam container is actually attached to*: reachable
+    from the container that must post to us, and from nothing off this host.
 
     Returns ``{"category", "detail", "safe"}`` where category is one of
-    loopback, docker-gateway, unverified, wildcard or public.
+    loopback, bridge-gateway, unverified, wildcard or public.
     """
     bind = config.get("collector", "bind")
     syntactic = classify_bind_address(bind)
@@ -341,25 +455,33 @@ def assess_bind(config, mailu=None) -> dict:
         }
 
     mailu = mailu or Mailu(config)
-    gateways, error = mailu.network_gateways()
+    service = mailu.antispam_service
+    gateways, error = mailu.service_bridge_gateways(service)
     if bind in gateways:
         return {
-            "category": "docker-gateway",
-            "detail": f"{bind} is a Docker network gateway on this host",
+            "category": "bridge-gateway",
+            "detail": (
+                f"{bind} is the gateway of a Docker bridge network attached to "
+                f"the {service} container"
+            ),
             "safe": True,
         }
     if error:
         return {
             "category": "unverified",
-            "detail": f"cannot confirm {bind} is a Docker gateway ({error})",
+            "detail": (
+                f"cannot confirm {bind} is the gateway of a bridge network "
+                f"attached to {service} ({error})"
+            ),
             "safe": False,
         }
     known = ", ".join(sorted(gateways)) if gateways else "none found"
     return {
         "category": "public" if syntactic == "public" else "unverified",
         "detail": (
-            f"{bind} is not a Docker network gateway on this host "
-            f"(gateways: {known}); it may be reachable from other machines"
+            f"{bind} is not the gateway of a Docker bridge network attached to "
+            f"the {service} container (those gateways: {known}); it may be "
+            f"reachable from other machines"
         ),
         "safe": False,
     }
@@ -379,26 +501,35 @@ def cmd_collect(args, config) -> int:
 
     bind = config.get("collector", "bind")
     port = config.get("collector", "port")
+    token = read_token(config)  # fails loudly on an unusable token file
     exposure = assess_bind(config)
     if not exposure["safe"] and not args.allow_remote:
         raise MailutError(
-            f"refusing to bind the collector to {bind}: it is unauthenticated and "
-            f"{exposure['detail']}.\n"
-            "Use the loopback address, or the gateway of the Docker network the "
-            "antispam container is on so that only containers on this host can "
-            "reach it (see the Rspamd section of docs/install.md), or pass "
-            "--allow-remote if it is firewalled and you accept the risk."
+            f"refusing to bind the collector to {bind}: {exposure['detail']}.\n"
+            "Use the loopback address, or the gateway of a Docker bridge network "
+            "the antispam container is attached to, so that only containers on "
+            "this host can reach it (see the Rspamd section of docs/install.md), "
+            "or pass --allow-remote if it is firewalled and you accept the risk.\n"
+            "Setting collector.token_file is worthwhile either way, but it does "
+            "not make a widely reachable bind address safe on its own."
         )
-    if exposure["category"] == "docker-gateway":
+    if exposure["category"] == "bridge-gateway":
         log.info(
             "collector bound to %s:%d (%s); make sure your firewall does not "
             "forward that port", bind, port, exposure["detail"],
         )
     elif not exposure["safe"]:
         log.warning(
-            "collector bound to %s:%d with --allow-remote: %s. The endpoint is "
-            "unauthenticated.", bind, port, exposure["detail"],
+            "collector bound to %s:%d with --allow-remote: %s.", bind, port, exposure["detail"],
         )
+    if token is None:
+        log.warning(
+            "collector.token_file is not set: any process that can reach %s:%d "
+            "can post fabricated audit evidence. See mailut.conf(5).", bind, port,
+        )
+    else:
+        log.info("ingestion requires the shared token from %s",
+                 config.get("collector", "token_file"))
 
     stop = threading.Event()
 
@@ -421,7 +552,7 @@ def cmd_collect(args, config) -> int:
             ingestor.close()
 
     try:
-        server = _Server((bind, port), ingestor, config.get("collector", "max_body_bytes"))
+        server = _Server((bind, port), ingestor, config.get("collector", "max_body_bytes"), token)
     except OSError as exc:
         ingestor.close()
         raise MailutError(f"cannot bind collector to {bind}:{port}: {exc}") from exc

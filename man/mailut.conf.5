@@ -185,21 +185,36 @@ Default:
 .SH SECTION [collector]
 .TP
 .B bind
-Address the audit collector listens on. The collector is unauthenticated, so it
-must not be reachable from other hosts.
+Address the audit collector listens on. This decides who can reach the
+ingestion endpoint, so it is checked rather than taken on trust.
 .IP
 A loopback address is the safest, but the Rspamd exporter runs inside the
 antispam container and cannot reach the host's loopback. For that case bind to
-an address the container can reach and the outside world cannot \(em normally
-the Docker bridge gateway, such as
+the gateway of a Docker
+.B bridge
+network that the antispam container is attached to, such as
 .IR 172.17.0.1 .
 Whatever you choose must match the
 .B url
 in the exporter snippet.
 .IP
-A wildcard
+.B mailut
+accepts only loopback or such a gateway, and the narrowness is deliberate. A
+private address is not sufficient, because a LAN or VPC address is private too
+and would expose the port to that entire network. A
+.B macvlan
+or
+.B ipvlan
+gateway is not accepted either: those drivers attach containers directly to the
+physical network, their gateway is normally the real upstream router, and
+Docker does not apply to them the packet filtering it applies to bridge
+networks. Nor is the gateway of an unrelated Docker project accepted \(em the
+antispam container cannot reach it, so nothing would ever arrive.
+.IP
+An address that cannot be verified is refused rather than assumed safe. A
+wildcard
 .RB ( 0.0.0.0 ", " :: )
-or a publicly routable address is refused unless
+or a publicly routable address is likewise refused unless
 .B "mailut audit collect \-\-allow\-remote"
 is used deliberately. Default:
 .IR 127.0.0.1 .
@@ -207,6 +222,53 @@ is used deliberately. Default:
 .B port
 TCP port for the collector, 1\-65535. Default:
 .IR 8765 .
+.TP
+.B token_file
+Absolute path to a file holding a shared secret that a client must present to
+submit audit evidence. Strongly recommended. Without it, any process able to
+reach
+.B bind
+can post fabricated records into the audit trail \(em precisely what that trail
+exists to rule out. Restricting the bind address limits who can try; the token
+is what establishes that a submission came from Rspamd.
+.IP
+Generate one and keep it private:
+.IP
+.nf
+.RS
+umask 077 && openssl rand -hex 32 > /etc/mailut/collector.token
+.RE
+.fi
+.IP
+Put the same value in the exporter rule's
+.B password
+field.
+.B mailut
+accepts it as HTTP Basic credentials, which is the only scheme Rspamd's
+.B metadata_exporter
+can send \(em its http backend builds the header from the rule's
+.B user
+and
+.BR password ,
+with no way to set an arbitrary one \(em or as
+.BR "Authorization: Bearer <token>" ,
+which is more convenient for
+.BR curl (1).
+The username is not a secret.
+.IP
+The file must be at least 16 characters, contain no whitespace, and be
+unreadable by other accounts:
+.B mailut
+refuses a group- or world-readable token file rather than using it, and refuses
+to start if the file is missing or empty instead of falling back to accepting
+everything. The
+.I /health
+endpoint stays unauthenticated so wiring can be checked, but it reports its
+counters only to authenticated callers.
+.IP
+Empty means ingestion is unauthenticated, which
+.B mailut doctor
+reports as a warning. Default: empty.
 .TP
 .B max_body_bytes
 Largest accepted HTTP request body. A larger request is refused with 413.
@@ -325,6 +387,7 @@ message_max_bytes = 26214400
 [collector]
 bind = 127.0.0.1
 port = 8765
+token_file = /etc/mailut/collector.token
 .fi
 .SH FILES
 .TP
@@ -333,5 +396,10 @@ The configuration file.
 .TP
 .I /usr/local/share/mailut/mailut.conf.example
 The shipped example, with every setting at its default.
+.TP
+.I /etc/mailut/collector.token
+Suggested location for the
+.B token_file
+secret. Mode 0600.
 .SH SEE ALSO
 .BR mailut (8)

@@ -67,23 +67,48 @@ message_max_bytes = 26214400
 max_retention_days = 3650
 
 [collector]
-# The collector is unauthenticated, so it must not be reachable off this host.
+# Who can reach the ingestion endpoint.
 #
 # 127.0.0.1 is correct only if something on the host itself posts to it. The
 # Rspamd exporter runs inside the antispam *container*, which cannot reach the
-# host's loopback -- for that, bind to the Docker bridge gateway instead (see
-# the Rspamd section of docs/install.md), for example:
+# host's loopback -- for that, bind to the gateway of a Docker bridge network
+# the antispam container is attached to (see the Rspamd section of
+# docs/install.md), for example:
 #
 #     bind = 172.17.0.1
 #
-# mailut checks this against the gateway addresses Docker reports for the
-# networks on this host, and accepts only loopback or one of those gateways.
-# A private address is NOT sufficient on its own: a LAN or VPC address is
-# private too and would expose this unauthenticated port to that whole
-# network. Anything else is refused unless `mailut audit collect
-# --allow-remote` is used deliberately.
+# mailut accepts loopback, or the gateway of a *bridge* network that the
+# antispam container is actually attached to -- the only addresses reachable
+# from Rspamd and from nothing off this host. It is deliberately narrower than
+# it may look:
+#
+#   * A private address is NOT sufficient. A LAN or VPC address is private too
+#     and would expose this port to that whole network.
+#   * A macvlan or ipvlan gateway is NOT accepted. Those drivers put containers
+#     directly on the physical network and the gateway is usually the real
+#     upstream router; Docker does not even apply its bridge firewall rules
+#     there.
+#   * The gateway of an unrelated Docker project is NOT accepted: the antispam
+#     container cannot reach it, so the collector would never receive anything.
+#
+# Anything else is refused unless `mailut audit collect --allow-remote` is used
+# deliberately.
 bind = 127.0.0.1
 port = 8765
+
+# Shared token required to submit audit evidence. Strongly recommended: without
+# it, any process that can reach the address above can post fabricated evidence
+# into the audit trail, which is exactly what the trail exists to rule out.
+#
+#     umask 077 && openssl rand -hex 32 > /etc/mailut/collector.token
+#
+# Put the same value in the Rspamd exporter's `password` (Mailu Tools accepts
+# it as HTTP Basic, which is what metadata_exporter can send, or as a Bearer
+# token). The file must be mode 0600; mailut refuses to use one that other
+# accounts can read. /health stays unauthenticated so wiring can be checked.
+#
+# This is defence in depth, not a substitute for the bind rules above.
+# token_file = /etc/mailut/collector.token
 
 # Maximum accepted HTTP request body.
 max_body_bytes = 4194304

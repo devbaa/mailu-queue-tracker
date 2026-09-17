@@ -51,6 +51,7 @@ DEFAULTS: dict[str, dict[str, tuple[object, str]]] = {
         "log_poll_seconds": (30, "int"),
         "log_lookback": ("10m", "str"),
         "ingest_smtp_logs": (True, "bool"),
+        "token_file": ("", "str"),  # empty -> ingestion is unauthenticated
     },
     "watch": {
         "window": ("15m", "str"),
@@ -194,6 +195,9 @@ class Config:
             raise MailutError(f"{where}: collector.max_body_bytes must be >= 4096")
         if self.get("collector", "log_poll_seconds") < 1:
             raise MailutError(f"{where}: collector.log_poll_seconds must be >= 1")
+        token_file = self.get("collector", "token_file")
+        if token_file and not os.path.isabs(token_file):
+            raise MailutError(f"{where}: collector.token_file must be an absolute path")
         if not self.compose_argv:
             raise MailutError(f"{where}: mailu.compose_command must not be empty")
         for domain in self.get("mailu", "local_domains"):

@@ -13,7 +13,7 @@ from helpers import FIXTURES, MailutTestCase
 from mailut import collector
 from mailut import scopes as scope_store
 from mailut.config import Config
-from mailut.mailu import ENV_DOCKER_GATEWAYS, ENV_SMTP_LOG, Mailu
+from mailut.mailu import ENV_BRIDGE_GATEWAYS, ENV_SMTP_LOG, Mailu
 from mailut.util import MailutError, classify_bind_address
 
 
@@ -32,17 +32,19 @@ class BindAddressTests(MailutTestCase):
     mailut-audit.service runs `audit collect` with no --allow-remote.
 
     But "private" is NOT the same as "Docker-local": a host's LAN or VPC
-    address is private too, and binding an unauthenticated port to it exposes
-    it to every machine on that network. Safety is decided by whether the
-    address is a gateway Docker itself created, not by RFC 1918 membership.
+    address is private too, and binding the port to it exposes it to every
+    machine on that network. Nor is "some Docker network has this gateway"
+    enough -- a macvlan gateway is typically the real upstream router, and an
+    unrelated project's bridge is not reachable from Mailu at all. Safety means
+    the gateway of a bridge network the antispam container is attached to.
     """
 
     def setUp(self):
         super().setUp()
         # No Docker in the test environment: state explicitly what it would
         # report, so each case is deterministic.
-        os.environ[ENV_DOCKER_GATEWAYS] = "172.17.0.1,172.18.0.1"
-        self.addCleanup(os.environ.pop, ENV_DOCKER_GATEWAYS, None)
+        os.environ[ENV_BRIDGE_GATEWAYS] = "172.17.0.1,172.18.0.1"
+        self.addCleanup(os.environ.pop, ENV_BRIDGE_GATEWAYS, None)
 
     def test_classification(self):
         for address, expected in (
@@ -80,7 +82,7 @@ class BindAddressTests(MailutTestCase):
         """The documented Linux setup must not refuse to start."""
         self.assertEqual(self._collect("172.17.0.1"), 0)
 
-    def test_any_docker_gateway_is_accepted_not_just_the_default_bridge(self):
+    def test_any_attached_bridge_gateway_is_accepted_not_just_docker0(self):
         self.assertEqual(self._collect("172.18.0.1"), 0)
 
     def test_loopback_bind_is_accepted(self):
@@ -92,11 +94,11 @@ class BindAddressTests(MailutTestCase):
             with self.assertRaises(MailutError, msg=address) as caught:
                 self._collect(address)
             self.assertIn("refusing to bind", str(caught.exception))
-            self.assertIn("not a Docker network gateway", str(caught.exception))
+            self.assertIn("not the gateway of a Docker bridge network", str(caught.exception))
 
     def test_unverifiable_address_is_refused(self):
         """If Docker cannot be queried, we must not assume the address is safe."""
-        os.environ.pop(ENV_DOCKER_GATEWAYS, None)
+        os.environ.pop(ENV_BRIDGE_GATEWAYS, None)
         with self.assertRaises(MailutError) as caught:
             self._collect("192.168.1.20")
         self.assertIn("refusing to bind", str(caught.exception))
@@ -108,7 +110,7 @@ class BindAddressTests(MailutTestCase):
         path = self.tmp / "assess.conf"
         for address, category, safe in (
             ("127.0.0.1", "loopback", True),
-            ("172.17.0.1", "docker-gateway", True),
+            ("172.17.0.1", "bridge-gateway", True),
             ("192.168.1.20", "unverified", False),
             ("0.0.0.0", "wildcard", False),
             ("8.8.8.8", "public", False),
@@ -148,6 +150,323 @@ class BindAddressTests(MailutTestCase):
         # private is not what makes it acceptable -- it is acceptable because
         # Docker reports it as a bridge gateway, which this fixture says it is.
         self.assertEqual(self._collect("172.17.0.1"), 0)
+
+
+class BridgeGatewayDiscoveryTests(MailutTestCase):
+    """Only bridge networks attached to antispam may authorise a bind address.
+
+    The first version of this rule collected the gateway of *every* Docker
+    network on the machine. Two things are wrong with that:
+
+      * Driver. Docker's macvlan and ipvlan drivers attach containers straight
+        to the physical network, and the configured gateway is normally the
+        real upstream router (Docker's own documentation uses examples such as
+        ``--gateway=192.168.32.254``). Docker also does not install the
+        packet-filtering rules for them that it installs for bridge networks.
+        Treating such a gateway as host-local is exactly backwards.
+      * Attachment. The gateway of an unrelated Docker project is not reachable
+        from the antispam container, so approving it yields a collector that
+        Rspamd can never post to.
+    """
+
+    def _mailu(self, inspect_output, networks=("mailu_default",)):
+        config = Config.load(self._conf())
+        mailu = Mailu(config)
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return types.SimpleNamespace(returncode=0, stdout=inspect_output, stderr="")
+
+        mailu.service_networks = lambda service: (set(networks), None)
+        import mailut.mailu as mailu_mod
+
+        real = mailu_mod.subprocess.run
+        mailu_mod.subprocess.run = fake_run
+        self.addCleanup(setattr, mailu_mod.subprocess, "run", real)
+        return mailu, calls
+
+    def _conf(self):
+        path = self.tmp / "gw.conf"
+        path.write_text(
+            f"[storage]\nstate_dir = {self.state_dir}\n[collector]\nbind = 127.0.0.1\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop(ENV_BRIDGE_GATEWAYS, None)
+
+    def test_bridge_gateways_are_collected(self):
+        mailu, _ = self._mailu("bridge 172.18.0.1\n")
+        gateways, error = mailu.service_bridge_gateways("antispam")
+        self.assertIsNone(error)
+        self.assertEqual(gateways, {"172.18.0.1"})
+
+    def test_macvlan_gateway_is_ignored(self):
+        """A macvlan gateway is usually the LAN router, not a host-local address."""
+        mailu, _ = self._mailu("macvlan 192.168.32.254\n")
+        gateways, error = mailu.service_bridge_gateways("antispam")
+        self.assertIsNone(error)
+        self.assertEqual(gateways, set())
+
+    def test_ipvlan_and_overlay_gateways_are_ignored(self):
+        mailu, _ = self._mailu("ipvlan 192.168.40.1\noverlay 10.10.0.1\n")
+        gateways, _ = mailu.service_bridge_gateways("antispam")
+        self.assertEqual(gateways, set())
+
+    def test_only_the_bridge_survives_a_mixed_listing(self):
+        mailu, _ = self._mailu("macvlan 192.168.32.254\nbridge 172.18.0.1\n")
+        gateways, _ = mailu.service_bridge_gateways("antispam")
+        self.assertEqual(gateways, {"172.18.0.1"})
+
+    def test_only_attached_networks_are_inspected(self):
+        """An unrelated project's bridge must never be queried, let alone trusted."""
+        mailu, calls = self._mailu("bridge 172.18.0.1\n", networks=("mailu_default",))
+        mailu.service_bridge_gateways("antispam")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("mailu_default", calls[0])
+        self.assertNotIn("some_other_project_default", calls[0])
+
+    def test_a_macvlan_lan_gateway_does_not_authorise_a_bind(self):
+        """End to end: the exact shape of the reported defect."""
+        import logging
+
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        path = self.tmp / "macvlan.conf"
+        path.write_text(
+            f"[storage]\nstate_dir = {self.state_dir}\n"
+            f"[collector]\nbind = 192.168.32.254\nport = 18997\ningest_smtp_logs = false\n",
+            encoding="utf-8",
+        )
+        config = Config.load(path)
+        mailu = Mailu(config)
+        mailu.service_networks = lambda service: ({"lan"}, None)
+        import mailut.mailu as mailu_mod
+
+        real = mailu_mod.subprocess.run
+        mailu_mod.subprocess.run = lambda argv, **kw: types.SimpleNamespace(
+            returncode=0, stdout="macvlan 192.168.32.254\n", stderr="")
+        self.addCleanup(setattr, mailu_mod.subprocess, "run", real)
+
+        verdict = collector.assess_bind(config, mailu)
+        self.assertFalse(verdict["safe"])
+        self.assertIn("bridge network", verdict["detail"])
+
+    def test_discovery_failure_is_an_error_not_an_empty_answer(self):
+        """"Cannot ask Docker" must not be reported as "no such gateway"."""
+        config = Config.load(self._conf())
+        mailu = Mailu(config)
+        mailu.service_networks = lambda service: (set(), "no running container for the antispam service")
+        gateways, error = mailu.service_bridge_gateways("antispam")
+        self.assertEqual(gateways, set())
+        self.assertIn("no running container", error)
+
+
+class CollectorAuthTests(MailutTestCase):
+    """Ingestion must be authenticated, so evidence cannot be fabricated.
+
+    Reaching the right bridge network is a network-layer restriction: any other
+    container on it could still POST invented audit records. For a store whose
+    whole purpose is forensic evidence, that is the wrong default.
+    """
+
+    def _conf(self, token_file=None, **extra):
+        path = self.tmp / "auth.conf"
+        body = f"[storage]\nstate_dir = {self.state_dir}\n[collector]\nbind = 127.0.0.1\n"
+        if token_file is not None:
+            body += f"token_file = {token_file}\n"
+        for key, value in extra.items():
+            body += f"{key} = {value}\n"
+        path.write_text(body, encoding="utf-8")
+        return Config.load(path)
+
+    def _token_file(self, content, mode=0o600):
+        path = self.tmp / "collector.token"
+        path.write_text(content, encoding="utf-8")
+        path.chmod(mode)
+        return path
+
+    # -- reading the token ---------------------------------------------------
+    def test_no_token_file_means_no_authentication(self):
+        self.assertIsNone(collector.read_token(self._conf()))
+
+    def test_token_is_read(self):
+        path = self._token_file("a" * 64)
+        self.assertEqual(collector.read_token(self._conf(path)), "a" * 64)
+
+    def test_a_world_readable_token_is_refused(self):
+        """A secret any local account can read is not a secret."""
+        path = self._token_file("a" * 64, mode=0o644)
+        with self.assertRaises(MailutError) as caught:
+            collector.read_token(self._conf(path))
+        self.assertIn("readable by other accounts", str(caught.exception))
+
+    def test_a_group_readable_token_is_refused(self):
+        path = self._token_file("a" * 64, mode=0o640)
+        with self.assertRaises(MailutError):
+            collector.read_token(self._conf(path))
+
+    def test_an_empty_token_is_refused(self):
+        path = self._token_file("\n")
+        with self.assertRaises(MailutError) as caught:
+            collector.read_token(self._conf(path))
+        self.assertIn("empty", str(caught.exception))
+
+    def test_a_short_token_is_refused(self):
+        path = self._token_file("hunter2")
+        with self.assertRaises(MailutError) as caught:
+            collector.read_token(self._conf(path))
+        self.assertIn("at least", str(caught.exception))
+
+    def test_a_missing_token_file_is_an_error_not_an_open_endpoint(self):
+        with self.assertRaises(MailutError) as caught:
+            collector.read_token(self._conf(self.tmp / "absent.token"))
+        self.assertIn("cannot read", str(caught.exception))
+
+    def test_token_file_must_be_absolute(self):
+        path = self.tmp / "rel.conf"
+        path.write_text(
+            f"[storage]\nstate_dir = {self.state_dir}\n"
+            "[collector]\ntoken_file = collector.token\n", encoding="utf-8")
+        with self.assertRaises(MailutError) as caught:
+            Config.load(path)
+        self.assertIn("absolute", str(caught.exception))
+
+    def test_collect_refuses_to_start_with_an_unusable_token_file(self):
+        """Failing closed: never fall back to accepting everything."""
+        import logging
+
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        path = self._token_file("a" * 64, mode=0o644)
+        args = _CollectArgs()
+        with self.assertRaises(MailutError):
+            collector.cmd_collect(args, self._conf(path, port=18996, ingest_smtp_logs="false"))
+
+    # -- reading the Authorization header ------------------------------------
+    def test_bearer_scheme(self):
+        self.assertEqual(collector.presented_token("Bearer sekrit"), "sekrit")
+
+    def test_basic_scheme_carries_the_token_as_the_password(self):
+        """What Rspamd's metadata_exporter can actually send.
+
+        Its http backend builds the header from the rule's user/password and
+        offers no way to set an arbitrary one, so Basic is the only scheme it
+        can speak. The username is not a secret.
+        """
+        import base64
+
+        header = "Basic " + base64.b64encode(b"mailut:sekrit").decode()
+        self.assertEqual(collector.presented_token(header), "sekrit")
+
+    def test_a_password_may_contain_a_colon(self):
+        import base64
+
+        header = "Basic " + base64.b64encode(b"mailut:a:b:c").decode()
+        self.assertEqual(collector.presented_token(header), "a:b:c")
+
+    def test_schemes_are_case_insensitive(self):
+        self.assertEqual(collector.presented_token("bearer sekrit"), "sekrit")
+
+    def test_unusable_headers_yield_no_token(self):
+        for header in (None, "", "Bearer", "Bearer   ", "Digest xyz",
+                       "Basic !!!not-base64!!!", "Basic " + "bm9jb2xvbg=="):
+            self.assertIsNone(collector.presented_token(header), repr(header))
+
+    # -- the endpoint itself -------------------------------------------------
+    def _serve(self, token):
+        import logging
+        import threading
+
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        ingestor = collector.Ingestor(self._conf())
+        self.addCleanup(ingestor.close)
+        server = collector._Server(("127.0.0.1", 0), ingestor, 1048576, token)
+        self.addCleanup(server.server_close)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05},
+                                  daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def _post(self, base, headers=None):
+        import urllib.error
+        import urllib.request
+
+        payload = json.dumps({"timestamp": 1758000000, "from": "a@example.net",
+                              "rcpt": ["b@example.com"], "action": "reject"}).encode()
+        request = urllib.request.Request(f"{base}/rspamd", data=payload,
+                                         headers=headers or {})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    def test_ingestion_without_a_token_is_rejected(self):
+        base = self._serve("s" * 32)
+        self.assertEqual(self._post(base), 401)
+
+    def test_ingestion_with_a_wrong_token_is_rejected(self):
+        base = self._serve("s" * 32)
+        self.assertEqual(self._post(base, {"Authorization": "Bearer wrong"}), 401)
+
+    def test_ingestion_with_the_bearer_token_is_accepted(self):
+        base = self._serve("s" * 32)
+        self.assertEqual(self._post(base, {"Authorization": "Bearer " + "s" * 32}), 200)
+
+    def test_ingestion_with_basic_credentials_is_accepted(self):
+        import base64
+
+        base = self._serve("s" * 32)
+        header = "Basic " + base64.b64encode(b"mailut:" + b"s" * 32).decode()
+        self.assertEqual(self._post(base, {"Authorization": header}), 200)
+
+    def test_ingestion_is_open_when_no_token_is_configured(self):
+        base = self._serve(None)
+        self.assertEqual(self._post(base), 200)
+
+    def test_a_rejected_post_stores_nothing(self):
+        scope_store.upsert_scope(
+            self.db(), scope_type="all", value="*", mode="include", level="metadata",
+            retention_days=30, message_retention_days=None,
+        )
+        base = self._serve("s" * 32)
+        self.assertEqual(self._post(base), 401)
+        count = self.db().execute("SELECT count(*) AS n FROM audit_events").fetchone()["n"]
+        self.assertEqual(count, 0)
+
+    def test_health_stays_open_so_wiring_can_be_checked(self):
+        import urllib.request
+
+        base = self._serve("s" * 32)
+        with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
+            payload = json.loads(response.read().decode())
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["auth"])
+
+    def test_health_withholds_counters_from_unauthenticated_callers(self):
+        import urllib.request
+
+        base = self._serve("s" * 32)
+        with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
+            self.assertNotIn("stats", json.loads(response.read().decode()))
+        request = urllib.request.Request(
+            f"{base}/health", headers={"Authorization": "Bearer " + "s" * 32})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            self.assertIn("stats", json.loads(response.read().decode()))
+
+    def test_the_shipped_exporter_snippet_sends_credentials(self):
+        from helpers import ROOT
+
+        snippet = (ROOT / "share" / "rspamd" / "mailut-exporter.conf").read_text()
+        self.assertIn("user = ", snippet)
+        self.assertIn("password = ", snippet)
 
 
 class CollectOnceTests(MailutTestCase):
@@ -212,6 +531,90 @@ class CollectOnceTests(MailutTestCase):
         self.assertEqual(stored, 0)
 
 
+class DoctorAuthTests(MailutTestCase):
+    """doctor must report the authentication state, including a wrong password.
+
+    The reachability probe cannot catch a credential mismatch: /health is open,
+    so it answers happily while every real export is rejected with 401 and the
+    audit trail quietly stays empty.
+    """
+
+    def _setup(self, *, token=None, exporter_password=..., url="http://172.17.0.1:18765/rspamd"):
+        override = self.compose_dir / "overrides" / "rspamd"
+        override.mkdir(parents=True, exist_ok=True)
+        rule = f'url = "{url}";'
+        if exporter_password is not ...:
+            rule += f' user = "mailut"; password = "{exporter_password}";'
+        (override / "mailut-exporter.conf").write_text(
+            "metadata_exporter { rules { mailut { " + rule + " } } }", encoding="utf-8")
+        body = (
+            f"[mailu]\ncompose_dir = {self.compose_dir}\ncompose_command = /bin/false\n"
+            f"[storage]\nstate_dir = {self.state_dir}\n"
+            f"[collector]\nbind = 172.17.0.1\nport = 18765\n"
+        )
+        if token is not None:
+            token_path = self.tmp / "collector.token"
+            token_path.write_text(token, encoding="utf-8")
+            token_path.chmod(0o600)
+            body += f"token_file = {token_path}\n"
+        path = self.tmp / "doctorauth.conf"
+        path.write_text(body, encoding="utf-8")
+        os.environ[ENV_BRIDGE_GATEWAYS] = "172.17.0.1"
+        self.addCleanup(os.environ.pop, ENV_BRIDGE_GATEWAYS, None)
+
+        from mailut import status
+
+        return {c["check"]: c for c in status.collect_checks(Config.load(path))}
+
+    def test_no_token_is_a_warning(self):
+        checks = self._setup(exporter_password=...)
+        self.assertEqual(checks["collector token"]["status"], "warn")
+        self.assertIn("fabricated", checks["collector token"]["detail"])
+
+    def test_a_configured_token_is_reported_ok(self):
+        checks = self._setup(token="t" * 32, exporter_password="t" * 32)
+        self.assertEqual(checks["collector token"]["status"], "ok")
+
+    def test_an_unreadable_token_file_fails(self):
+        checks = self._setup(exporter_password=...)
+        path = self.tmp / "bad.conf"
+        path.write_text(
+            f"[mailu]\ncompose_dir = {self.compose_dir}\ncompose_command = /bin/false\n"
+            f"[storage]\nstate_dir = {self.state_dir}\n"
+            f"[collector]\ntoken_file = {self.tmp / 'nonexistent.token'}\n",
+            encoding="utf-8")
+        from mailut import status
+
+        checks = {c["check"]: c for c in status.collect_checks(Config.load(path))}
+        self.assertEqual(checks["collector token"]["status"], "fail")
+
+    def test_matching_credentials_are_reported_ok(self):
+        checks = self._setup(token="t" * 32, exporter_password="t" * 32)
+        self.assertEqual(checks["rspamd exporter auth"]["status"], "ok")
+
+    def test_a_wrong_exporter_password_fails(self):
+        """What the open /health endpoint can never tell you."""
+        checks = self._setup(token="t" * 32, exporter_password="w" * 32)
+        self.assertEqual(checks["rspamd exporter auth"]["status"], "fail")
+        self.assertIn("401", checks["rspamd exporter auth"]["detail"])
+
+    def test_a_missing_exporter_password_fails_when_a_token_is_required(self):
+        checks = self._setup(token="t" * 32, exporter_password=...)
+        self.assertEqual(checks["rspamd exporter auth"]["status"], "fail")
+        self.assertIn("no credentials", checks["rspamd exporter auth"]["detail"])
+
+    def test_the_secret_is_never_printed(self):
+        secret = "t" * 32
+        checks = self._setup(token=secret, exporter_password="w" * 32)
+        for check in checks.values():
+            self.assertNotIn(secret, check["detail"])
+            self.assertNotIn("w" * 32, check["detail"])
+
+    def test_an_exporter_password_without_a_host_token_is_flagged(self):
+        checks = self._setup(exporter_password="t" * 32)
+        self.assertEqual(checks["rspamd exporter auth"]["status"], "warn")
+
+
 class RspamdDoctorTests(MailutTestCase):
     """doctor must check the real wiring, not that our own example exists."""
 
@@ -252,8 +655,8 @@ class RspamdDoctorTests(MailutTestCase):
             'metadata_exporter { rules { mailut { url = "http://172.17.0.1:18765/rspamd"; } } }',
             encoding="utf-8",
         )
-        os.environ[ENV_DOCKER_GATEWAYS] = "172.17.0.1"
-        self.addCleanup(os.environ.pop, ENV_DOCKER_GATEWAYS, None)
+        os.environ[ENV_BRIDGE_GATEWAYS] = "172.17.0.1"
+        self.addCleanup(os.environ.pop, ENV_BRIDGE_GATEWAYS, None)
         checks = {c["check"]: c for c in status.collect_checks(self.matching_config())}
         self.assertEqual(checks["rspamd exporter"]["status"], "ok",
                          checks["rspamd exporter"]["detail"])

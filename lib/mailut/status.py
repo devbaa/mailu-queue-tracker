@@ -7,6 +7,7 @@ changes state, and never touches Mailu's own configuration.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -235,9 +236,9 @@ def collect_checks(config) -> list[dict]:
         results,
         "collector bind",
         OK if exposure["safe"] else WARN,
-        f"{bind}:{config.get('collector', 'port')} — {exposure['detail']}"
-        + ("" if exposure["safe"] else "; the collector is unauthenticated"),
+        f"{bind}:{config.get('collector', 'port')} — {exposure['detail']}",
     )
+    _check_collector_token(results, config)
     running, note = collector_mod.probe(config)
     collector_unit_active = systemd.is_active("mailut-audit.service")
     _check(results, "collector", OK if running else (WARN if not collector_unit_active else FAIL), note)
@@ -296,6 +297,7 @@ def _check_rspamd(results, config, mailu, docker) -> None:
     port = config.get("collector", "port")
     configured = None
     exporter_url = None
+    exporter_text = ""
     if override_dir.is_dir():
         for candidate in sorted(override_dir.glob("*.conf")):
             try:
@@ -307,7 +309,7 @@ def _check_rspamd(results, config, mailu, docker) -> None:
             url = _exporter_url(text)
             if url is None:
                 continue
-            configured, exporter_url = candidate, url
+            configured, exporter_url, exporter_text = candidate, url, text
             break
 
     if configured:
@@ -321,6 +323,7 @@ def _check_rspamd(results, config, mailu, docker) -> None:
                    f"{configured} posts to {exporter_url}, but {mismatch}")
         else:
             _check(results, "rspamd exporter", OK, f"{configured} posts to {exporter_url}")
+        _check_exporter_credentials(results, config, configured, exporter_text)
     elif override_dir.is_dir():
         _check(
             results,
@@ -373,7 +376,73 @@ def _check_rspamd(results, config, mailu, docker) -> None:
         _check(results, "rspamd -> collector", WARN, f"not verified: {detail}")
 
 
+def _check_exporter_credentials(results, config, path, text: str) -> None:
+    """Will the exporter's credentials be accepted by the collector?
+
+    The reachability probe cannot answer this: ``/health`` is deliberately open,
+    so it succeeds even when the exporter's password is wrong and every real
+    posting is being rejected with 401.  Compare the two directly instead.
+
+    Neither the token nor the configured password is ever printed.
+    """
+    try:
+        token = collector_mod.read_token(config)
+    except MailutError:
+        return  # already reported by the collector token check
+    match = _EXPORTER_PASSWORD_RE.search(text)
+    password = match.group(1) if match else None
+    if token is None:
+        if password:
+            _check(results, "rspamd exporter auth", WARN,
+                   f"{path} sends a password but collector.token_file is not set; "
+                   "the collector accepts anything that reaches it")
+        return
+    if password is None:
+        _check(
+            results,
+            "rspamd exporter auth",
+            FAIL,
+            f"collector.token_file is set but {path} sends no credentials: every "
+            "export will be rejected with 401 and no Rspamd evidence will be "
+            'collected. Add `user = "mailut";` and `password = "<token>";` to the rule',
+        )
+        return
+    if not hmac.compare_digest(password, token):
+        _check(
+            results,
+            "rspamd exporter auth",
+            FAIL,
+            f"the password in {path} does not match collector.token_file; every "
+            "export will be rejected with 401",
+        )
+        return
+    _check(results, "rspamd exporter auth", OK, f"{path} sends the collector token")
+
+
+def _check_collector_token(results, config) -> None:
+    """Is ingestion authenticated, and is the secret stored safely?"""
+    configured = config.get("collector", "token_file")
+    if not configured:
+        _check(
+            results,
+            "collector token",
+            WARN,
+            "collector.token_file is not set: anything that can reach the "
+            "collector can post fabricated audit evidence. Generate one with "
+            "`openssl rand -hex 32` and give Rspamd the same value "
+            "(see mailut.conf(5))",
+        )
+        return
+    try:
+        collector_mod.read_token(config)
+    except MailutError as exc:
+        _check(results, "collector token", FAIL, str(exc))
+        return
+    _check(results, "collector token", OK, f"ingestion requires the token in {configured}")
+
+
 _EXPORTER_URL_RE = re.compile(r"""\burl\s*=\s*["']?(https?://[^"'\s;]+)""")
+_EXPORTER_PASSWORD_RE = re.compile(r"""\bpassword\s*=\s*["']?([^"'\s;]+)""")
 
 
 def _exporter_url(text: str) -> str | None:
