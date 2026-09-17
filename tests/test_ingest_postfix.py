@@ -187,3 +187,57 @@ class PostfixParseTests(MailutTestCase):
             if isinstance(result, Event):
                 events += 1
         self.assertGreaterEqual(events, 5)
+
+
+class FixtureHygieneTests(MailutTestCase):
+    """Committed fixtures must only use reserved domains and addresses."""
+
+    def fixture_text(self):
+        return "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in sorted(FIXTURES.iterdir())
+            if path.is_file()
+        )
+
+    def test_only_reserved_domains(self):
+        import re
+
+        text = self.fixture_text()
+        # Look only where a hostname can actually appear, so scores and
+        # filenames in subjects are not mistaken for domains.
+        patterns = (
+            r"@([A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+            r"helo=<([^>]+)>",
+            r"relay=([A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+            r"host ([A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+        )
+        candidates = set()
+        for pattern in patterns:
+            candidates.update(match.rstrip(".>") for match in re.findall(pattern, text))
+
+        # RFC 2606 reserves the .example TLD and example.com/.net/.org.
+        allowed = re.compile(r"(^|\.)example$|(^|\.)example\.(com|net|org)$")
+        offenders = sorted(name for name in candidates if not allowed.search(name))
+        self.assertEqual(offenders, [], f"non-reserved domain(s) in fixtures: {offenders}")
+        self.assertGreater(len(candidates), 3, "the domain scan matched nothing")
+
+    def test_only_reserved_ip_addresses(self):
+        import ipaddress
+        import re
+
+        # RFC 5737 documentation ranges, RFC 1918 private space and loopback.
+        reserved = [
+            ipaddress.ip_network(cidr)
+            for cidr in ("203.0.113.0/24", "198.51.100.0/24", "192.0.2.0/24",
+                         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                         "127.0.0.0/8", "0.0.0.0/32")
+        ]
+        offenders = []
+        for candidate in set(re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", self.fixture_text())):
+            try:
+                address = ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            if not any(address in network for network in reserved):
+                offenders.append(candidate)
+        self.assertEqual(sorted(offenders), [], f"routable IP(s) in fixtures: {offenders}")
