@@ -1,0 +1,124 @@
+# /etc/mailut/mailut.conf -- Mailu Tools configuration.
+#
+# INI syntax, parsed with Python's configparser. Every setting below is shown
+# with its built-in default, so a commented-out line and a deleted line behave
+# identically. See mailut.conf(5) for the full description of each key.
+#
+# This file holds static host configuration only. Audit collection scopes are
+# mutable state and live in the SQLite database; manage them with
+# `mailut audit add` / `mailut audit remove`, not here.
+#
+# Keep this file mode 0640 or stricter.
+
+[mailu]
+# Directory containing your Mailu docker-compose.yml.
+compose_dir = /opt/mailu
+
+# Compose invocation. Use "docker-compose" for the legacy v1 binary.
+compose_command = docker compose
+
+# Service names as they appear in the compose file.
+smtp_service = smtp
+front_service = front
+antispam_service = antispam
+
+# Optional: the domains this server accepts mail for. When set, the "all"
+# audit scope only matches recipients at these domains, which keeps outbound
+# recipients out of the audit. When empty, "all" matches every inbound
+# recipient that is observed.
+local_domains =
+
+[storage]
+# Empty values derive from the installation layout:
+#   state_dir   /var/lib/mailut
+#   database    <state_dir>/mailut.sqlite3
+#   message_dir <state_dir>/messages
+#   backup_dir  <state_dir>/backups
+state_dir =
+database =
+message_dir =
+backup_dir =
+
+# SQLite busy timeout in milliseconds.
+busy_timeout_ms = 5000
+
+[audit]
+# Retention for newly collected metadata, in days. Changing this affects
+# future records only: every record stores its own expiry when it is created.
+default_retention_days = 30
+
+# Collection level for new scopes: metadata, headers or message.
+default_level = metadata
+
+# Record accepted and delivered mail too, not only rejections. Without this
+# you cannot tell "we never saw it" from "we accepted it".
+store_accepted = true
+
+# Capabilities. A scope may not ask for a level that is disabled here; the
+# request fails rather than being silently downgraded.
+allow_headers = true
+allow_messages = false
+
+# Retention and size ceiling for complete stored messages.
+message_retention_days = 30
+message_max_bytes = 26214400
+
+# Upper bound accepted by --retention / --message-retention.
+max_retention_days = 3650
+
+[collector]
+# The collector is unauthenticated: keep it on localhost.
+bind = 127.0.0.1
+port = 8765
+
+# Maximum accepted HTTP request body.
+max_body_bytes = 4194304
+
+# How often the Mailu smtp container log is polled, and how far back to read
+# when no cursor has been stored yet.
+log_poll_seconds = 30
+log_lookback = 10m
+
+# Set to false to collect Rspamd decisions only (no Postfix log ingestion).
+ingest_smtp_logs = true
+
+[watch]
+# Window used by `mailut watch` for rate calculations.
+window = 15m
+
+# How long watch samples are kept, in days.
+retention_days = 90
+
+# Thresholds. These suit a busy server; lower them sharply for a low-volume
+# transactional host. A value above *_warn raises a warning, above *_crit a
+# critical.
+queue_warn = 200
+queue_crit = 500
+deferred_warn = 100
+deferred_crit = 300
+
+# Messages submitted by one authenticated (SASL) sender within the window.
+sender_sent_warn = 50
+sender_sent_crit = 150
+
+# "Several accounts sending at once": a sender submitting at least
+# bulk_sender_msgs in the window counts as bulk-like.
+bulk_sender_msgs = 50
+multi_sender_warn = 3
+multi_sender_crit = 5
+
+# Messages queued by one envelope sender, point in time.
+sender_queue_warn = 100
+sender_queue_crit = 300
+
+# Distinct recipient domains for one sender in the queue.
+rcpt_domains_warn = 25
+rcpt_domains_crit = 50
+
+# Bounce+defer rate over the window, as a percentage of delivery attempts.
+bounce_defer_rate_warn = 20
+bounce_defer_rate_crit = 40
+
+# Remote spam/blacklist rejections seen in the window.
+spam_block_warn = 1
+spam_block_crit = 5

@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""mailut — Mailu Tools.
+
+A thin launcher: it locates the application package and hands over to it.
+Works from a source checkout (../lib/mailut) and from an installation
+(/usr/local/lib/mailut/mailut).
+"""
+
+import os
+import sys
+
+_SELF = os.path.realpath(__file__)
+_HERE = os.path.dirname(_SELF)
+
+
+def _find_package_dir():
+    parent = os.path.dirname(_HERE)  # <prefix> when installed, <checkout> otherwise
+    candidates = [
+        os.environ.get("MAILUT_LIB_DIR"),
+        os.path.join(parent, "lib", "mailut"),  # installed: <prefix>/lib/mailut
+        os.path.join(parent, "lib"),  # source checkout: <checkout>/lib
+        "/usr/local/lib/mailut",
+        "/usr/lib/mailut",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(os.path.join(candidate, "mailut", "cli.py")):
+            return candidate
+    return None
+
+
+def main():
+    package_dir = _find_package_dir()
+    if package_dir is None:
+        sys.stderr.write(
+            "mailut: cannot find the mailut library directory.\n"
+            "Set MAILUT_LIB_DIR, or reinstall with `sudo make install`.\n"
+        )
+        return 1
+    if package_dir not in sys.path:
+        sys.path.insert(0, package_dir)
+    from mailut.cli import main as cli_main
+
+    return cli_main(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
