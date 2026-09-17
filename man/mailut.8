@@ -1,0 +1,664 @@
+.\" mailut(8) -- Mailu Tools
+.TH MAILUT 8 "2026-09-17" "Mailu Tools 1.0.0" "System Administration Utilities"
+.SH NAME
+mailut \- Mailu queue, abuse and inbound-mail audit tooling
+.SH SYNOPSIS
+.B mailut
+.RB [ \-\-config
+.IR PATH ]
+.I COMMAND
+.RI [ SUBCOMMAND ]
+.RI [ OPTIONS ]
+.br
+.B mailut
+.RB [ \-h | \-\-help | \-\-version ]
+.br
+.B mailut help
+.RI [ COMMAND
+.RI [ SUBCOMMAND ]]
+.SH DESCRIPTION
+.B mailut
+is the single administrative command of Mailu Tools. It operates on a
+.B Mailu
+mail server running under Docker Compose and does three things:
+.IP \(bu 3
+inspects and cleans the Postfix queue, and investigates abusive or compromised
+accounts;
+.IP \(bu 3
+samples queue and delivery behaviour on a timer, so an incident can be seen
+after the fact;
+.IP \(bu 3
+records an auditable history of what the server decided about
+.I inbound
+mail \(em who tried to send it, whether it was rejected, greylisted, classified
+as spam, accepted or delivered \(em in a local SQLite database.
+.PP
+The audit subsystem is evidence collection, not a mailbox. It answers questions
+such as "did this server ever see mail from this sender for this customer, and
+what did it do with it?".
+.PP
+Audit collection is
+.B opt-in
+and off until a scope is added. Nothing is collected for a recipient that no
+scope covers.
+.SH GLOBAL OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Read configuration from
+.I PATH
+instead of
+.IR /etc/mailut/mailut.conf .
+The
+.B MAILUT_CONF
+environment variable has the same effect and is overridden by this option.
+.TP
+.B \-\-version
+Print the installed version and exit. Equivalent to
+.BR "mailut version" .
+.TP
+.BR \-q ", " \-\-quiet
+Suppress non-essential output.
+.TP
+.BR \-h ", " \-\-help
+Show help. Every command and subcommand accepts
+.BR \-\-help ;
+.B mailut help \fICOMMAND\fR
+is equivalent.
+.SH COMMAND HIERARCHY
+.nf
+mailut
+\(em\(em status                    operational summary
+\(em\(em doctor                    read-only diagnostics
+\(em\(em version                   installed version
+\(em\(em config check | show       inspect configuration
+\(em\(em db migrate | optimize     database maintenance
+\(em\(em watch [--print]           sample queue/abuse indicators
+\(em\(em report                    summarise recorded samples
+\(em\(em ips                       external client IPs from the front log
+\(em\(em queue list | drain | hold | release
+\(em\(em audit add    all | domain <d> | email <e>
+\(em\(em audit remove all | domain <d> | email <e>
+\(em\(em audit scopes | show | stats | purge | doctor | collect | ingest
+\(em\(em upgrade                   install a newer public release
+\(em\(em uninstall                 remove the application
+.fi
+.SH AUDIT COMMANDS
+.SS Scopes
+Collection scopes decide which
+.I inbound recipients
+are audited. A scope is one of
+.BR all ,
+a
+.BR domain ,
+or an exact
+.BR email
+address. A domain scope means mail addressed to local recipients at that
+domain; an email scope means that exact envelope recipient. A scope is never
+interpreted as the remote sender.
+.TP
+.B mailut audit add all
+.TQ
+.BI "mailut audit add domain " DOMAIN
+.TQ
+.BI "mailut audit add email " ADDRESS
+Ensure the scope is collected. Options:
+.BI \-\-retention " DAYS"
+(metadata retention for records created from now on),
+.BI \-\-level " LEVEL"
+.RB ( metadata ", " headers " or " message ),
+and
+.BI \-\-message\-retention " DAYS"
+(only with
+.BR "\-\-level message" ).
+A level that the host disables in
+.BR mailut.conf (5)
+is rejected with an error; it is never silently downgraded.
+.TP
+.B mailut audit remove all
+.TQ
+.BI "mailut audit remove domain " DOMAIN
+.TQ
+.BI "mailut audit remove email " ADDRESS
+Ensure the scope is
+.B not
+collected from now on. This records an explicit exclusion; it
+.B does not delete anything.
+See
+.B REMOVING A SCOPE IS NOT DELETION
+below.
+.TP
+.B mailut audit scopes
+List the effective scopes.
+.BI \-\-test " ADDRESS"
+reports whether one address would be collected and which rule decides it.
+.B \-\-json
+prints the scope records.
+.SS Scope precedence
+The most specific applicable rule wins:
+.IP
+.B email
+>
+.B domain
+>
+.B all
+.PP
+At equal specificity, exclusion wins. When no rule applies, the recipient is
+not collected. So
+.PP
+.nf
+    mailut audit add all
+    mailut audit remove domain private.example.com
+    mailut audit add email monitored@private.example.com
+.fi
+.PP
+collects every domain except
+.IR private.example.com ,
+and within that domain collects exactly
+.IR monitored@private.example.com .
+.PP
+Domains and the domain part of addresses are compared case-insensitively, as
+SMTP requires. Local parts are compared case-insensitively too.
+.PP
+A connection rejected before
+.B RCPT TO
+has no recipient to attribute. Such an event is collected only when the
+.B all
+scope is including, because no narrower scope could be shown to apply.
+.SS Collection levels
+.TP
+.B metadata
+The default. Envelope and connection metadata, the decision, SMTP response,
+Rspamd score/action and Rspamd symbols. It stores
+.B no
+message body, no attachments, no complete RFC822 message and no arbitrary raw
+header set.
+.TP
+.B headers
+Additionally retains the complete RFC822 header section, when the Rspamd
+exporter supplies it. No body.
+.TP
+.B message
+Additionally retains the complete original message. Globally disabled by
+default; see
+.B allow_messages
+in
+.BR mailut.conf (5).
+Stored messages are gzipped under
+.I /var/lib/mailut/messages/YYYY/MM/DD/
+with generated names and mode 0600, and are never shown in ordinary output.
+.SS Querying
+.TP
+.B mailut audit show
+Search retained events. Filters:
+.BR \-\-since ", " \-\-after ", " \-\-before ", " \-\-domain ", " \-\-recipient ", "
+.BR \-\-sender ", " \-\-sender\-domain ", " \-\-action ", " \-\-stage ", "
+.BR \-\-queue\-id ", " \-\-message\-id ", " \-\-ip ", " \-\-symbol ", " \-\-limit .
+.B \-\-since
+accepts a duration
+.RI ( 30m ", " 6h ", " 7d ", " 2w )
+or an absolute timestamp.
+.B \-\-json
+emits JSON Lines: one self-contained JSON object per event, so a large result
+set streams.
+.TP
+.B mailut audit stats
+Counts by action and stage, pre-DATA rejection count, database and payload
+storage size, oldest and newest record, next expiration and the most common
+Rspamd symbols. Accepts the same filters.
+.SS Purging
+.TP
+.B mailut audit purge
+Delete retained evidence. Exactly one selector is required:
+.BR \-\-expired ,
+.BI \-\-domain " DOMAIN" ,
+.BI \-\-email " ADDRESS" ,
+.BI \-\-before " TIME" ,
+or
+.BR \-\-all .
+.B \-\-dry\-run
+reports the event and payload-file counts and changes nothing.
+.B \-\-all
+requires typing the word
+.B purge
+at the prompt, or
+.BR \-\-yes .
+.B \-\-expired
+is idempotent and is what
+.B mailut\-purge.timer
+runs daily.
+.PP
+Payload files are removed before the database rows that reference them, so a
+failure part-way through leaves no row pointing at a deleted file and no file
+orphaned by a deleted row. Files that cannot be removed are reported and their
+events are kept for the next run.
+.SS Collector
+.TP
+.B mailut audit collect
+Run the collector in the foreground. It listens for Rspamd metadata-exporter
+posts on the configured local address and polls the Mailu smtp container log
+for the SMTP evidence Rspamd never sees. This is what
+.B mailut\-audit.service
+runs; logging goes to stdout and stderr, therefore to the journal.
+.TP
+.B mailut audit ingest {rspamd|postfix} [\-\-file PATH]
+Ingest exporter payloads (JSON or JSON Lines) or Postfix log lines from a file
+or standard input. Useful for replaying evidence and for testing.
+.TP
+.B mailut audit doctor
+Alias for
+.BR "mailut doctor" .
+.SH SMTP STAGE LIMITATION
+A remote server can be refused during the connection, after
+.BR HELO ,
+after
+.BR "MAIL FROM" ,
+or after
+.BR "RCPT TO" ,
+all of which happen
+.B before
+the
+.B DATA
+command. At that point the sender has transmitted no headers and no body.
+.PP
+For such an event the following fields cannot exist and are reported as
+.RI ` "unavailable (rejected before DATA)" ':
+.BR Subject ,
+.BR Message-ID ,
+the header
+.B From
+and
+.BR To ,
+and the message body.
+.B mailut
+never fabricates them. What is recorded is what genuinely existed: timestamp,
+stage, remote IP, HELO name, envelope sender, envelope recipient, the SMTP
+response code and the Postfix reason.
+.SH QUEUE COMMANDS
+.TP
+.B mailut queue list
+Summarise the Postfix queue: totals, deferred count, top senders by backlog and
+the widest recipient fan-out.
+.B \-\-detail
+lists individual messages;
+.B \-\-json
+is machine readable.
+.B mailut queue
+with no subcommand is the same as
+.BR "mailut queue list" .
+.TP
+.BI "mailut queue drain \-\-sender " ADDRESS
+.TQ
+.BI "mailut queue drain \-\-recipient " ADDRESS
+Delete every queued message whose envelope sender (or recipient) is
+.I exactly
+that address. Matching is exact and case-insensitive:
+.I example.com
+never matches
+.IR user@example.com .
+.TP
+.B mailut queue hold
+.TQ
+.B mailut queue release
+Move matching messages into or out of the Postfix hold queue.
+.PP
+All three destructive queue commands support
+.B \-\-dry\-run
+and
+.BR \-\-yes ,
+and prompt for confirmation when run on a terminal without
+.BR \-\-yes .
+Without a terminal and without
+.BR \-\-yes ,
+they refuse rather than assume consent.
+.PP
+Removing mail from the queue does not disable the Mailu account and does not
+stop new submissions. Secure the account separately.
+.SH IP INVESTIGATION
+.TP
+.B mailut ips
+Show the external client IP addresses seen in the Mailu
+.B front
+log, with the accounts that authenticated from each.
+.BI \-\-since " DURATION"
+sets the log window,
+.BI \-\-user " ADDRESS"
+narrows to one account,
+.B \-\-all
+includes private and internal addresses, and
+.BI \-\-exclude " IP[,IP...]"
+drops known addresses such as your own front.
+.PP
+The
+.B smtp
+container only ever sees the front proxy, so a compromised account's real
+source address is only visible here. IPv4 only: an IPv6 address cannot be told
+apart from a timestamp in free log text without false positives.
+.SH REPORTING, WATCH AND STATUS
+.TP
+.B mailut watch
+Take one sample of queue size, delivery outcomes, rate-limit and spam
+rejections, and authenticated sender volume; evaluate it against the
+.B [watch]
+thresholds and record it in the database. Run by
+.BR mailut\-watch.timer .
+.B \-\-print
+prints the sample without recording it.
+.TP
+.B mailut report
+Summarise recorded samples over a window
+.RB ( \-\-since ,
+default 7d): sample and alert counts, peak queue size, peak per-sender volume
+and the samples where a threshold was crossed.
+.TP
+.B mailut status
+Concise operational status: version, configuration file, Mailu compose
+location, database path, size and schema version, scope and event counts,
+latest event, latest purge, message storage size, collector state and the state
+of every unit this application owns.
+.TP
+.B mailut doctor
+Read-only diagnostics. Checks the Python version, the Docker executable and
+compose directory, the configured services, SQLite readability, writability and
+schema, filesystem permissions, the collector port and \(em where systemd
+exists \(em the units. It changes nothing and exits
+.B 4
+when a critical check fails.
+.SH LIFECYCLE COMMANDS
+.TP
+.B mailut version
+Print the installed version, for example
+.RI ` "mailut 1.0.0" '
+or
+.RI ` "mailut 1.0.0 (a1b2c3d)" '.
+This works without git and without the source checkout.
+.TP
+.B mailut upgrade
+Install a newer release from the project's public GitHub releases. No GitHub
+account, token,
+.B gh
+command or SSH key is required, and the original clone may have been deleted.
+Options:
+.RS
+.TP
+.B \-\-check
+Report installed and latest versions and exit. Contacts GitHub, changes
+nothing, and does not require root. "Already current" is a success, not an
+error.
+.TP
+.BR \-n ", " \-\-dry\-run
+Describe what would be done without touching installed files, configuration,
+the database, systemd or Mailu.
+.TP
+.BI \-\-version " X.Y.Z"
+Install a specific published release. Only a version is accepted, never a URL.
+.TP
+.B \-\-allow\-downgrade
+Permit installing an older release. Refused by default.
+.TP
+.B \-\-prerelease
+Consider prereleases. Ignored by default: alpha, beta, rc and draft releases
+are never installed by an ordinary upgrade.
+.TP
+.BR \-y ", " \-\-yes
+Do not prompt. Needed for automated deployment when installed application files
+have local modifications.
+.TP
+.B \-\-verbose
+Show transfer and installation detail.
+.RE
+.IP
+The sequence is: acquire the lifecycle lock; discover the release; download the
+tarball and its
+.B SHA256SUMS
+into a private temporary directory; verify the SHA-256 (a mismatch is fatal and
+cannot be overridden); unpack and validate the tree; stop the collector and
+back up the database
+.I only
+when the schema changes; install; migrate; reload systemd; restore the previous
+unit run state; verify; release the lock. Nothing from the network is executed
+before it has been verified, and the application is never installed by piping a
+download into a shell.
+.IP
+Configuration and audit data are always preserved.
+.B mailut
+requires the
+.B make
+utility on the host to install a release; installation itself is performed by
+the new release's own
+.BR "make install" ,
+so upgrading and installing from source cannot drift apart.
+.TP
+.B mailut uninstall
+Remove the application using its own install manifest. Entirely local: no
+network, no GitHub, no checkout and no Makefile are needed. Units are stopped
+and disabled before their files are removed, and only files listed in the
+manifest are touched.
+.RS
+.TP
+(default)
+Remove application files; preserve
+.I /etc/mailut
+and
+.IR /var/lib/mailut .
+.TP
+.B \-\-remove\-config
+Also remove
+.IR /etc/mailut .
+.TP
+.B \-\-remove\-data
+Also remove
+.IR /var/lib/mailut ,
+which permanently deletes retained mail evidence.
+.TP
+.B \-\-purge
+Exactly
+.B \-\-remove\-config \-\-remove\-data
+and nothing else.
+.TP
+.BR \-n ", " \-\-dry\-run
+Show the units that would be stopped and disabled, the files that would be
+removed, and what would be preserved or removed. Changes nothing.
+.TP
+.BR \-y ", " \-\-yes
+Skip confirmation.
+.RE
+.IP
+.B \-\-remove\-data
+and
+.B \-\-purge
+first print a summary of what is about to be destroyed and then require the
+word
+.B remove
+to be typed. An empty line is not consent.
+.SH REMOVING A SCOPE IS NOT DELETION
+.B mailut audit remove
+stops future collection.
+.B mailut audit purge
+deletes retained evidence. They are different operations and one never implies
+the other. After
+.PP
+.nf
+    mailut audit remove domain example.com
+.fi
+.PP
+nothing further is collected for that domain, and every record already held for
+it remains readable until its own
+.B expires_at
+passes or an explicit purge removes it.
+.SH RETENTION
+Every record stores its expiry when it is created, from the retention of the
+scope that was in force at that moment. Changing a scope's retention therefore
+affects
+.B future
+records only; it does not rewrite the expiry of history. Raw-message retention
+may be shorter than metadata retention, in which case the stored message is
+deleted while its metadata remains.
+.SH FILES
+.TP
+.I /usr/local/sbin/mailut
+The command.
+.TP
+.I /usr/local/lib/mailut/
+Application library.
+.TP
+.I /usr/local/share/mailut/
+Example configuration, the Rspamd exporter example and the install manifest.
+.TP
+.I /usr/local/share/mailut/install-manifest.json
+The authoritative list of files this release owns; used by upgrade and
+uninstall.
+.TP
+.I /etc/mailut/mailut.conf
+Configuration. Never overwritten by an install or an upgrade. See
+.BR mailut.conf (5).
+.TP
+.I /var/lib/mailut/mailut.sqlite3
+Audit database, mode 0600.
+.TP
+.I /var/lib/mailut/messages/
+Stored raw messages, mode 0700.
+.TP
+.I /var/lib/mailut/backups/
+Database backups taken before a schema migration.
+.TP
+.I /run/mailut/lifecycle.lock
+Lock serialising upgrade, uninstall and schema migration.
+.TP
+.I /etc/systemd/system/mailut-*.service, mailut-*.timer
+Units owned by this application.
+.SH ENVIRONMENT
+.TP
+.B MAILUT_CONF
+Default configuration file path, overridden by
+.BR \-\-config .
+.TP
+.B MAILUT_LIB_DIR
+Directory containing the
+.B mailut
+Python package. Only needed when running from an unusual location.
+.TP
+.B HTTPS_PROXY, HTTP_PROXY, NO_PROXY
+Honoured by
+.B mailut upgrade
+through the standard library HTTP client. Proxy credentials are never stored.
+.TP
+.B MAILUT_ROOT
+Re-bases every installed path under one directory. A testing aid used by the
+test suite for staged installs; do not set it on a real system.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Operational or runtime failure.
+.TP
+.B 2
+Invalid command line or invalid argument value.
+.TP
+.B 3
+A destructive action was not confirmed.
+.TP
+.B 4
+A verification or doctor check failed.
+.TP
+.B 5
+Another lifecycle operation holds the lock.
+.SH SECURITY CONSIDERATIONS
+Mail metadata is sensitive. The database and the message store are mode 0600
+and 0700 and owned by root.
+.PP
+The collector is
+.B unauthenticated
+and binds to 127.0.0.1 by default. Do not expose it. Binding elsewhere requires
+.B \-\-allow\-remote
+and is reported as a warning by
+.BR "mailut doctor" .
+Request bodies are size-limited.
+.PP
+Ingested values \(em senders, recipients, HELO names, subjects, Rspamd symbol
+options and Postfix rejection text \(em are chosen by the remote side. They are
+never interpolated into a shell command (every external program is run as an
+argument vector), never used to build a filesystem path, and terminal control
+characters are escaped before anything is printed. All SQL uses bound
+parameters.
+.PP
+Complete message retention is disabled by default and must be enabled
+deliberately in the configuration file. Retained bodies are never printed by
+ordinary list output.
+.PP
+.B mailut\-audit.service
+and
+.B mailut\-watch.service
+run as root because they must reach the Docker socket to read the Mailu queue
+and container logs; a non-root user or
+.B PrivateNetwork
+would break that access. The units therefore apply the hardening that is
+compatible with it \(em
+.BR NoNewPrivileges ,
+.BR PrivateTmp ,
+.BR ProtectSystem=full ,
+.BR ProtectHome ,
+kernel and cgroup protections \(em rather than directives that would silently
+prevent collection.
+.SH EXAMPLES
+Start collecting for one customer domain, keeping a year of metadata:
+.PP
+.nf
+    mailut audit add domain customer.example --retention 365
+.fi
+.PP
+Collect everything except one internal domain, but keep one monitored address
+inside it:
+.PP
+.nf
+    mailut audit add all
+    mailut audit remove domain internal.example.com
+    mailut audit add email monitored@internal.example.com
+    mailut audit scopes
+.fi
+.PP
+Investigate a customer who says a supplier's mail never arrived:
+.PP
+.nf
+    mailut audit show --recipient john@example.com \e
+                      --sender supplier@example.net --since 7d
+.fi
+.PP
+Find everything an RBL rejected in the last month, as JSON Lines:
+.PP
+.nf
+    mailut audit show --symbol RBL_SPAMHAUS --since 30d --json
+.fi
+.PP
+Clean a compromised account's queue, checking first:
+.PP
+.nf
+    mailut queue drain --sender compromised@example.com --dry-run
+    mailut queue drain --sender compromised@example.com
+    mailut ips --since 6h --user compromised@example.com
+.fi
+.PP
+Preview and then run a retention purge:
+.PP
+.nf
+    mailut audit purge --expired --dry-run
+    mailut audit purge --expired --yes
+.fi
+.PP
+Upgrade:
+.PP
+.nf
+    mailut upgrade --check
+    sudo mailut upgrade
+.fi
+.SH SEE ALSO
+.BR mailut.conf (5),
+.BR postqueue (1),
+.BR postsuper (1),
+.BR systemctl (1),
+.BR journalctl (1)
+.PP
+Upstream: https://github.com/devbaa/mailu-queue-tracker
+.SH AUTHORS
+Mailu Tools contributors.
