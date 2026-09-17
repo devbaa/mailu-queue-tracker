@@ -1,0 +1,15 @@
+smtp-1  | 2026-09-17T11:03:21.000000000Z Sep 17 11:03:21 mail postfix/smtpd[111]: NOQUEUE: reject: RCPT from unknown[203.0.113.4]: 550 5.7.1 <user@example.com>: Recipient address rejected: Access denied; from=<sender@example.net> to=<user@example.com> proto=ESMTP helo=<mx.example.net>
+smtp-1  | 2026-09-17T11:04:02.000000000Z Sep 17 11:04:02 mail postfix/smtpd[111]: NOQUEUE: reject: CONNECT from unknown[203.0.113.9]: 554 5.7.1 Client host rejected: Access denied; proto=SMTP
+smtp-1  | 2026-09-17T11:05:10.000000000Z Sep 17 11:05:10 mail postfix/smtpd[112]: NOQUEUE: reject: MAIL from unknown[203.0.113.11]: 450 4.7.1 Service unavailable; from=<spammer@example.net> proto=ESMTP helo=<evil.example.net>
+smtp-1  | 2026-09-17T11:06:00.000000000Z Sep 17 11:06:00 mail postfix/smtpd[113]: NOQUEUE: reject: RCPT from mx.example.net[203.0.113.42]: 450 4.7.1 <user@example.com>: Recipient address rejected: Greylisting in effect, please come back later; from=<sender@example.net> to=<user@example.com> proto=ESMTP helo=<mx.example.net>
+smtp-1  | 2026-09-17T11:07:15.000000000Z Sep 17 11:07:15 mail postfix/smtpd[114]: 4XyZ12345: milter-reject: END-OF-MESSAGE from mx.example.net[203.0.113.77]: 5.7.1 Gtube pattern; from=<virus@example.net> to=<user@example.com> proto=ESMTP helo=<mx.example.net>
+smtp-1  | 2026-09-17T11:08:00.000000000Z Sep 17 11:08:00 mail postfix/cleanup[120]: 4AbCd67890: message-id=<abc123@example.net>
+smtp-1  | 2026-09-17T11:08:01.000000000Z Sep 17 11:08:01 mail postfix/qmgr[121]: 4AbCd67890: from=<sender@example.net>, size=4096, nrcpt=1 (queue active)
+smtp-1  | 2026-09-17T11:08:02.000000000Z Sep 17 11:08:02 mail postfix/lmtp[122]: 4AbCd67890: to=<user@example.com>, relay=imap[192.168.203.4]:2525, delay=1.2, dsn=2.0.0, status=sent (250 2.0.0 <user@example.com> jOe0 Saved)
+smtp-1  | 2026-09-17T11:09:00.000000000Z Sep 17 11:09:00 mail postfix/smtpd[130]: NOQUEUE: reject: RCPT from unknown[203.0.113.55]: 550 5.1.1 <nobody@example.com>: Recipient address rejected: User unknown; from=<sender@example.net> to=<nobody@example.com> proto=ESMTP helo=<mx.example.net>, sasl_method=PLAIN, sasl_username=agent@example.com
+smtp-1  | 2026-09-17T11:10:00.000000000Z Sep 17 11:10:00 mail postfix/smtp[140]: 4Out99999: to=<remote@example.org>, relay=mx.example.org[198.51.100.7]:25, delay=2.0, dsn=2.0.0, status=sent (250 ok)
+smtp-1  | 2026-09-17T11:11:00.000000000Z this line is not a postfix log line at all
+smtp-1  | 2026-09-17T11:11:01.000000000Z Sep 17 11:11:01 mail postfix/smtpd[150]: NOQUEUE: reject:
+smtp-1  | 
+smtp-1  | 2026-09-17T11:12:00.000000000Z Sep 17 11:12:00 mail postfix/smtpd[151]: warning: hostname mx.example.net does not resolve
+smtp-1  | 2026-09-17T11:13:00.000000000Z Sep 17 11:13:00 mail postfix/smtpd[152]: NOQUEUE: reject_warning: RCPT from unknown[203.0.113.99]: 550 5.7.1 <user@example.com>: would have been rejected; from=<sender@example.net> to=<user@example.com> proto=ESMTP helo=<mx.example.net>

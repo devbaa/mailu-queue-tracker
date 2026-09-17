@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Mailu Tools retention purge
+Documentation=man:mailut(8)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=mailut-purge.service
+
+[Install]
+WantedBy=timers.target

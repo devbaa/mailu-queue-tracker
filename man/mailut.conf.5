@@ -1,0 +1,427 @@
+.\" mailut.conf(5) -- Mailu Tools configuration
+.TH MAILUT.CONF 5 "2026-09-17" "Mailu Tools 1.0.0" "File Formats"
+.SH NAME
+mailut.conf \- configuration file for Mailu Tools
+.SH SYNOPSIS
+.I /etc/mailut/mailut.conf
+.SH DESCRIPTION
+.B mailut.conf
+configures
+.BR mailut (8).
+It is an INI file: sections in square brackets, then
+.I key = value
+lines. A
+.B #
+or
+.B ;
+begins a comment, including at the end of a value. Values are not expanded or
+interpolated, and the file is never executed or sourced.
+.PP
+Booleans accept
+.BR true / false ,
+.BR yes / no ,
+.BR on / off
+and
+.BR 1 / 0 .
+Lists are separated by commas or whitespace. An unknown section or key is a
+hard error rather than a silent no-op, so a typo cannot quietly disable a
+setting.
+.PP
+This file holds
+.B static host configuration only.
+Audit collection scopes are mutable state and live in the SQLite database;
+manage them with
+.B mailut audit add
+and
+.BR "mailut audit remove" .
+The configuration file is not a database.
+.PP
+An example with every default is installed at
+.IR /usr/local/share/mailut/mailut.conf.example .
+.B make install
+and
+.B mailut upgrade
+never overwrite an existing
+.IR /etc/mailut/mailut.conf .
+Keep the file mode 0640 or stricter.
+.PP
+Validate it at any time with
+.BR "mailut config check" ,
+and print every effective value with
+.BR "mailut config show" .
+.SH SECTION [mailu]
+.TP
+.B compose_dir
+Directory containing the Mailu
+.IR docker-compose.yml .
+Default:
+.IR /opt/mailu .
+.TP
+.B compose_command
+Command used to talk to Compose, split on whitespace and executed as an
+argument vector. Use
+.I docker-compose
+for the legacy v1 binary. Default:
+.IR "docker compose" .
+.TP
+.B smtp_service
+Name of the Postfix service in the compose file. Default:
+.IR smtp .
+.TP
+.B front_service
+Name of the front proxy service, whose log carries real client IP addresses.
+Default:
+.IR front .
+.TP
+.B antispam_service
+Name of the Rspamd service. Default:
+.IR antispam .
+.TP
+.B local_domains
+Optional list of domains this server accepts mail for. When set, the
+.B all
+audit scope matches only recipients at these domains, which keeps outbound
+recipients out of the audit. When empty, the
+.B all
+scope matches every inbound recipient observed. Default: empty.
+.SH SECTION [storage]
+.TP
+.B state_dir
+Base directory for all state. Empty means the installed layout's state
+directory,
+.IR /var/lib/mailut .
+Default: empty.
+.TP
+.B database
+Path to the SQLite database. Empty means
+.IR <state_dir>/mailut.sqlite3 .
+Default: empty.
+.TP
+.B message_dir
+Directory holding gzipped raw messages. Empty means
+.IR <state_dir>/messages .
+Default: empty.
+.TP
+.B backup_dir
+Directory holding database backups taken before a schema migration. Empty means
+.IR <state_dir>/backups .
+Default: empty.
+.TP
+.B busy_timeout_ms
+SQLite busy timeout in milliseconds, applied to every connection. Default:
+.IR 5000 .
+.SH SECTION [audit]
+.TP
+.B default_retention_days
+Metadata retention, in days, for records created by a scope that does not
+override it. Each record stores its own expiry when it is created, so changing
+this affects future records only. Minimum 1. Default:
+.IR 30 .
+.TP
+.B default_level
+Collection level used when
+.B mailut audit add
+is called without
+.BR \-\-level :
+.BR metadata ,
+.B headers
+or
+.BR message .
+It must be permitted by
+.B allow_headers
+/
+.B allow_messages
+below. Default:
+.IR metadata .
+.TP
+.B store_accepted
+Record accepted and delivered inbound mail as metadata, not only rejections.
+Turning this off makes it impossible to tell "this server never saw it" from
+"this server accepted it". Default:
+.IR true .
+.TP
+.B allow_headers
+Permit scopes to collect at level
+.BR headers .
+When false, a new scope may not ask for it: the request fails rather than being
+downgraded. A scope created while it was permitted keeps its recorded level but
+collects only metadata, which
+.B mailut audit scopes
+and
+.B mailut doctor
+both report. Default:
+.IR true .
+.TP
+.B allow_messages
+Permit scopes to collect at level
+.BR message ,
+retaining complete original messages. Off by default because it retains the
+contents of other people's mail. Default:
+.IR false .
+.TP
+.B message_retention_days
+Retention, in days, for stored raw messages when a scope does not override it
+with
+.BR \-\-message\-retention .
+May be shorter than the metadata retention, in which case the body is deleted
+while the metadata remains. Minimum 1. Default:
+.IR 30 .
+.TP
+.B message_max_bytes
+Largest message that will be stored. A larger one is not truncated: its
+metadata is kept and the omission is recorded in the event's reason. Minimum
+1024. Default:
+.I 26214400
+(25 MiB).
+.TP
+.B max_retention_days
+Upper bound accepted by
+.B \-\-retention
+and
+.BR \-\-message\-retention .
+Default:
+.I 3650
+(10 years).
+.SH SECTION [collector]
+.TP
+.B bind
+Address the audit collector listens on. This decides who can reach the
+ingestion endpoint, so it is checked rather than taken on trust.
+.IP
+A loopback address is the safest, but the Rspamd exporter runs inside the
+antispam container and cannot reach the host's loopback. For that case bind to
+the gateway of a Docker
+.B bridge
+network that the antispam container is attached to, such as
+.IR 172.17.0.1 .
+Whatever you choose must match the
+.B url
+in the exporter snippet.
+.IP
+.B mailut
+accepts only loopback or such a gateway, and the narrowness is deliberate. A
+private address is not sufficient, because a LAN or VPC address is private too
+and would expose the port to that entire network. A
+.B macvlan
+or
+.B ipvlan
+gateway is not accepted either: those drivers attach containers directly to the
+physical network, their gateway is normally the real upstream router, and
+Docker does not apply to them the packet filtering it applies to bridge
+networks. Nor is the gateway of an unrelated Docker project accepted \(em the
+antispam container cannot reach it, so nothing would ever arrive.
+.IP
+An address that cannot be verified is refused rather than assumed safe. A
+wildcard
+.RB ( 0.0.0.0 ", " :: )
+or a publicly routable address is likewise refused unless
+.B "mailut audit collect \-\-allow\-remote"
+is used deliberately. Default:
+.IR 127.0.0.1 .
+.TP
+.B port
+TCP port for the collector, 1\-65535. Default:
+.IR 8765 .
+.TP
+.B token_file
+Absolute path to the file holding the shared secret a client must present to
+submit audit evidence. Empty means the default,
+.IR /etc/mailut/collector.token ,
+not "no authentication" \(em see
+.B allow_unauthenticated
+below. Without a token, any process able to reach
+.B bind
+could post fabricated records into the audit trail, precisely what that trail
+exists to rule out. Restricting the bind address limits who can try; the token
+is what establishes that a submission came from Rspamd.
+.IP
+Create one with:
+.IP
+.nf
+.RS
+mailut audit token generate
+.RE
+.fi
+.IP
+which writes a random token mode 0600 and prints the lines to add to the
+exporter rule. It never replaces an existing token unless
+.B \-\-force
+is given, since that would stop Rspamd submitting until its
+.B password
+is updated to match.
+.B "mailut audit token show"
+prints the current value.
+.IP
+Put the same value in the exporter rule's
+.B password
+field.
+.B mailut
+accepts it as HTTP Basic credentials, which is the only scheme Rspamd's
+.B metadata_exporter
+can send \(em its http backend builds the header from the rule's
+.B user
+and
+.BR password ,
+with no way to set an arbitrary one \(em or as
+.BR "Authorization: Bearer <token>" ,
+which is more convenient for
+.BR curl (1).
+The username is not a secret.
+.IP
+The file must be at least 16 characters, contain no whitespace, and be
+unreadable by other accounts:
+.B mailut
+refuses a group- or world-readable token file rather than using it, and refuses
+to start if the file is missing or empty instead of falling back to accepting
+everything. The
+.I /health
+endpoint stays unauthenticated so wiring can be checked, but it reports its
+counters only to authenticated callers.
+.IP
+Default: empty, meaning
+.IR /etc/mailut/collector.token .
+.TP
+.B allow_unauthenticated
+Accept audit evidence from anyone who can reach the collector. Off by default:
+a missing token is a startup failure, not an open endpoint, so that an
+installation is never silently unauthenticated because a setting went unset.
+.IP
+Turning this on is a deliberate choice to trust everything that can reach
+.BR bind .
+.B mailut doctor
+reports it as a warning for as long as it is set. Default:
+.IR false .
+.TP
+.B max_body_bytes
+Largest accepted HTTP request body. A larger request is refused with 413.
+Minimum 4096. Default:
+.I 4194304
+(4 MiB).
+.TP
+.B log_poll_seconds
+How often the Mailu smtp container log is polled. One Docker call per poll,
+never one per event. Minimum 1. Default:
+.IR 30 .
+.TP
+.B log_lookback
+How far back the log is read the first time, before a cursor exists. Accepts a
+duration such as
+.IR 10m ", " 2h ", " 1d .
+Default:
+.IR 10m .
+.TP
+.B ingest_smtp_logs
+Whether the collector polls the Postfix log at all. Set to false to collect
+Rspamd decisions only \(em at the cost of losing every pre-DATA and policy
+rejection, which Rspamd never sees. Default:
+.IR true .
+.SH SECTION [watch]
+.B mailut watch
+samples the queue and recent SMTP activity and compares each value against a
+warning and a critical threshold. A value strictly above
+.I *_warn
+raises a warning; strictly above
+.I *_crit
+a critical.
+.TP
+.B window
+Log window used for rate calculations, as a duration. Default:
+.IR 15m .
+.TP
+.B retention_days
+How long recorded samples are kept, in days. Expired samples are deleted by
+.BR "mailut audit purge \-\-expired" .
+Default:
+.IR 90 .
+.TP
+.BR queue_warn ", " queue_crit
+Total messages in the Postfix queue. Defaults:
+.IR 200 ", " 500 .
+.TP
+.BR deferred_warn ", " deferred_crit
+Messages in the deferred queue. Defaults:
+.IR 100 ", " 300 .
+.TP
+.BR sender_sent_warn ", " sender_sent_crit
+Messages submitted by one authenticated (SASL) sender within
+.BR window .
+Defaults:
+.IR 50 ", " 150 .
+.TP
+.B bulk_sender_msgs
+A sender submitting at least this many messages within
+.B window
+counts as bulk-like. Default:
+.IR 50 .
+.TP
+.BR multi_sender_warn ", " multi_sender_crit
+How many distinct bulk-like senders at once are suspicious. A credential dump
+shows up as several accounts sending together with no single one dominating.
+Defaults:
+.IR 3 ", " 5 .
+.TP
+.BR sender_queue_warn ", " sender_queue_crit
+Messages queued by one envelope sender, point in time. Defaults:
+.IR 100 ", " 300 .
+.TP
+.BR rcpt_domains_warn ", " rcpt_domains_crit
+Distinct recipient domains addressed by one sender in the queue. Defaults:
+.IR 25 ", " 50 .
+.TP
+.BR bounce_defer_rate_warn ", " bounce_defer_rate_crit
+Bounce plus defer rate over
+.BR window ,
+as a percentage of delivery attempts. Defaults:
+.IR 20 ", " 40 .
+.TP
+.BR spam_block_warn ", " spam_block_crit
+Remote spam or blacklist rejections seen within
+.BR window .
+Defaults:
+.IR 1 ", " 5 .
+.PP
+The defaults suit a busy server. For a low-volume transactional host they are
+far too high; lower them until a sample of normal traffic sits comfortably
+below the warning level.
+.SH EXAMPLE
+.nf
+[mailu]
+compose_dir = /opt/mailu
+compose_command = docker compose
+smtp_service = smtp
+front_service = front
+antispam_service = antispam
+local_domains = example.com, example.org
+
+[storage]
+state_dir = /var/lib/mailut
+database = /var/lib/mailut/mailut.sqlite3
+
+[audit]
+default_retention_days = 30
+default_level = metadata
+store_accepted = true
+allow_headers = true
+allow_messages = false
+message_retention_days = 30
+message_max_bytes = 26214400
+
+[collector]
+bind = 127.0.0.1
+port = 8765
+token_file = /etc/mailut/collector.token
+.fi
+.SH FILES
+.TP
+.I /etc/mailut/mailut.conf
+The configuration file.
+.TP
+.I /usr/local/share/mailut/mailut.conf.example
+The shipped example, with every setting at its default.
+.TP
+.I /etc/mailut/collector.token
+Suggested location for the
+.B token_file
+secret. Mode 0600.
+.SH SEE ALSO
+.BR mailut (8)

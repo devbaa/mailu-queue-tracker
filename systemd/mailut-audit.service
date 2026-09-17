@@ -1,0 +1,37 @@
+[Unit]
+Description=Mailu Tools audit collector (Rspamd + Postfix SMTP evidence)
+Documentation=man:mailut(8) https://github.com/devbaa/mailu-queue-tracker
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/mailut audit collect
+Restart=on-failure
+RestartSec=5s
+# journald is the log: the collector writes to stdout/stderr only.
+StandardOutput=journal
+StandardError=journal
+RuntimeDirectory=mailut
+RuntimeDirectoryMode=0755
+StateDirectory=mailut
+StateDirectoryMode=0700
+
+# Hardening. The collector must reach the Docker socket to read Mailu logs and
+# the queue, so PrivateNetwork, ProtectSystem=strict and a User= other than
+# root would break it; what remains is what is compatible with that access.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

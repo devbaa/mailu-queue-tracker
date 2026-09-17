@@ -7,11 +7,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - name: Install shellcheck and mawk
-        run: sudo apt-get update && sudo apt-get install -y shellcheck mawk
-      - name: Lint shell scripts
-        run: shellcheck -s bash bin/*.sh install.sh tests/*.sh
-      - name: Run test suite
-        run: bash tests/run.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Static checks
+        run: make check PYTHON=python3
+      - name: Test suite
+        run: make test PYTHON=python3
+      - name: Staged install
+        run: |
+          make install DESTDIR="${RUNNER_TEMP}/mailut-root" PYTHON=python3
+          find "${RUNNER_TEMP}/mailut-root" -type f | sort
+      - name: Release artifact
+        if: matrix.python-version == '3.11'
+        run: |
+          make dist PYTHON=python3
+          cat dist/SHA256SUMS

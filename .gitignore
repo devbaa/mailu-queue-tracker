@@ -1,14 +1,18 @@
-# Local runtime config may contain secrets (tokens, webhook URLs).
-# The committed template is etc/mailu-queue-watch.conf.example.
-*.conf
-!*.conf.example
+# Build and release artifacts
+dist/
+__pycache__/
+*.pyc
 
-# Local logs / state if anyone runs the tracker from a checkout
-*.log
-state/
-snapshots/
-# ...but the committed test fixtures include sample log files
-!tests/fixtures/*.log
+# Local runtime state, if anyone runs mailut from a checkout
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/state/
+/messages/
+
+# Local configuration (the committed template is etc/mailut.conf.example)
+/mailut.conf
+/etc/mailut.conf
 
 # Editor / OS noise
 *~
