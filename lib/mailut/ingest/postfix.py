@@ -17,7 +17,7 @@ import datetime as _dt
 import re
 
 from ..events import Event
-from ..util import UTC, utcnow
+from ..util import UTC, normalize_iso, utcnow
 
 # `docker compose logs` prefixes each line with the service name, and with a
 # timestamp when --timestamps is used.
@@ -90,9 +90,9 @@ def _parse_timestamp(text: str, *, now: _dt.datetime | None = None) -> tuple[_dt
     now = now or utcnow()
     match = _DOCKER_TS.match(text) or _ISO_TS.match(text)
     if match:
-        raw = match.group(1).replace(" ", "T")
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
+        # Docker stamps nanoseconds, which fromisoformat rejects before 3.11;
+        # normalize_iso deals with that (and with a colon-less offset).
+        raw = normalize_iso(match.group(1).replace(" ", "T"))
         try:
             parsed = _dt.datetime.fromisoformat(raw)
         except ValueError:

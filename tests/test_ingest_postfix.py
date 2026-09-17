@@ -6,6 +6,7 @@ from helpers import FIXTURES, MailutTestCase
 
 from mailut.events import Event
 from mailut.ingest import postfix
+from mailut.util import from_iso, normalize_iso, utcnow
 
 
 def parse(line):
@@ -187,6 +188,103 @@ class PostfixParseTests(MailutTestCase):
             if isinstance(result, Event):
                 events += 1
         self.assertGreaterEqual(events, 5)
+
+
+class TimestampNormalisationTests(MailutTestCase):
+    """RFC 3339 shapes that older interpreters reject.
+
+    Before Python 3.11, fromisoformat accepts only what isoformat produces:
+    3 or 6 fractional digits and a colon in the offset. Docker's --timestamps
+    emits nanoseconds, so these assertions are on the normalised *string*,
+    which makes them fail on every interpreter if the rewrite is wrong rather
+    than only on the old ones.
+    """
+
+    def test_nanoseconds_are_truncated_to_microseconds(self):
+        self.assertEqual(
+            normalize_iso("2026-09-17T11:03:21.123456789Z"),
+            "2026-09-17T11:03:21.123456+00:00",
+        )
+
+    def test_short_fractions_are_padded(self):
+        self.assertEqual(
+            normalize_iso("2026-09-17T11:03:21.5Z"), "2026-09-17T11:03:21.500000+00:00"
+        )
+
+    def test_zulu_becomes_an_offset(self):
+        self.assertEqual(normalize_iso("2026-09-17T11:03:21Z"), "2026-09-17T11:03:21+00:00")
+        self.assertEqual(normalize_iso("2026-09-17T11:03:21z"), "2026-09-17T11:03:21+00:00")
+
+    def test_compact_offsets_gain_a_colon(self):
+        self.assertEqual(
+            normalize_iso("2026-09-17T11:03:21+0200"), "2026-09-17T11:03:21+02:00"
+        )
+        self.assertEqual(
+            normalize_iso("2026-09-17T11:03:21.000000000-0500"),
+            "2026-09-17T11:03:21.000000-05:00",
+        )
+
+    def test_output_is_accepted_by_a_pre_3_11_parser(self):
+        """Enforce the old contract even when running on a new interpreter.
+
+        Python 3.11 relaxed fromisoformat to accept almost any RFC 3339 input,
+        so a newer interpreter cannot notice a regression here on its own. This
+        checks the normalised string against what 3.9/3.10 actually accept:
+        what isoformat() emits.
+        """
+        import re
+
+        strict = re.compile(
+            r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{3}(\d{3})?)?)?"
+            r"([+-]\d{2}:\d{2}(:\d{2}(\.\d{6})?)?)?$"
+        )
+        for value in (
+            "2026-09-17T11:03:21.000000000Z",
+            "2026-09-17T11:03:21.987654321Z",
+            "2026-09-17T11:03:21.123456Z",
+            "2026-09-17T11:03:21.123Z",
+            "2026-09-17T11:03:21.5Z",
+            "2026-09-17T11:03:21Z",
+            "2026-09-17T13:03:21+0200",
+            "2026-09-17T13:03:21.000000000+02:00",
+        ):
+            normalised = normalize_iso(value)
+            self.assertRegex(normalised, strict, f"{value} -> {normalised}")
+
+    def test_already_valid_stamps_are_unchanged(self):
+        for value in ("2026-09-17T11:03:21+00:00", "2026-09-17T11:03:21.123456+00:00"):
+            self.assertEqual(normalize_iso(value), value)
+
+    def test_every_shape_round_trips_through_from_iso(self):
+        for value in (
+            "2026-09-17T11:03:21.000000000Z",
+            "2026-09-17T11:03:21.123456789Z",
+            "2026-09-17T11:03:21.5Z",
+            "2026-09-17T11:03:21Z",
+            "2026-09-17T13:03:21+0200",
+            "2026-09-17T13:03:21.000000000+02:00",
+        ):
+            parsed = from_iso(value)
+            self.assertEqual(parsed.year, 2026)
+            self.assertEqual(parsed.hour, 11, value)
+
+    def test_nanosecond_log_line_keeps_its_own_timestamp(self):
+        """The regression: a bad parse silently stamped the event with 'now'."""
+        line = (
+            "smtp-1  | 2026-09-17T11:03:21.987654321Z Sep 17 11:03:21 mail "
+            "postfix/smtpd[111]: NOQUEUE: reject: RCPT from unknown[203.0.113.4]: 550 5.7.1 "
+            "<user@example.com>: Recipient address rejected: Access denied; "
+            "from=<sender@example.net> to=<user@example.com> proto=ESMTP"
+        )
+        event = parse(line)
+        self.assertEqual(
+            event.occurred_at,
+            datetime.datetime(2026, 9, 17, 11, 3, 21, tzinfo=datetime.timezone.utc),
+        )
+        # The failure mode was a silent fallback to utcnow(), which on the day
+        # the fixture was written differs from the log stamp only by the clock.
+        self.assertNotEqual(event.occurred_at, utcnow())
+        self.assertGreater(abs((utcnow() - event.occurred_at).total_seconds()), 5)
 
 
 class FixtureHygieneTests(MailutTestCase):

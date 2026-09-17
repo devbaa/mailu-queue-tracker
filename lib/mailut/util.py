@@ -58,13 +58,37 @@ def to_iso(when: _dt.datetime) -> str:
     return when.astimezone(UTC).strftime(TS_FORMAT)
 
 
-def from_iso(text: str) -> _dt.datetime:
-    """Parse a timestamp written by :func:`to_iso` (tolerant of offsets)."""
-    value = text.strip()
-    if value.endswith("Z"):
+_FRACTION_RE = re.compile(r"\.(\d+)")
+_COMPACT_OFFSET_RE = re.compile(r"([+-]\d{2})(\d{2})$")
+
+
+def normalize_iso(text: str) -> str:
+    """Rewrite an RFC 3339 timestamp into what ``fromisoformat`` accepts.
+
+    Before Python 3.11, ``fromisoformat`` parses only what ``isoformat``
+    produces: exactly 3 or 6 fractional digits, and an offset with a colon.
+    Docker's ``--timestamps`` emits *nanoseconds* (9 digits), so without this
+    every container log timestamp would fail to parse on an older interpreter
+    and the event would silently be stamped with the current time instead.
+    """
+    value = str(text).strip()
+    if value.endswith(("Z", "z")):
         value = value[:-1] + "+00:00"
+
+    def _truncate(match: "re.Match") -> str:
+        digits = match.group(1)
+        if len(digits) <= 6:
+            return "." + digits.ljust(6, "0")
+        return "." + digits[:6]  # sub-microsecond precision is not representable
+
+    value = _FRACTION_RE.sub(_truncate, value, count=1)
+    return _COMPACT_OFFSET_RE.sub(r"\1:\2", value)
+
+
+def from_iso(text: str) -> _dt.datetime:
+    """Parse a timestamp written by :func:`to_iso`, or any RFC 3339 stamp."""
     try:
-        parsed = _dt.datetime.fromisoformat(value)
+        parsed = _dt.datetime.fromisoformat(normalize_iso(text))
     except ValueError as exc:
         raise UsageError(f"not a timestamp: {text}") from exc
     if parsed.tzinfo is None:
