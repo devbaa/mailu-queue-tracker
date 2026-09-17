@@ -14,6 +14,7 @@ notions of how this application is installed.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 from .. import db as db_mod
-from .. import migrations, release, systemd
+from .. import release, systemd
 from ..db import Database
 from ..util import (
     AbortedError,
@@ -203,6 +204,17 @@ def _run_installed(layout: dict, args: list[str], *, timeout: int = 120) -> subp
     )
 
 
+def _installed_schema_version(layout: dict) -> int | None:
+    """Schema version of the command currently installed at ``layout``."""
+    proc = _run_installed(layout, ["version", "--json"], timeout=30)
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(json.loads(proc.stdout)["schema_version"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def cmd_upgrade(args, config) -> int:
     if args.check:
         return cmd_check(args, config)
@@ -343,10 +355,16 @@ def _dry_run(args, target: dict, current_schema: int, layout: dict, order: int) 
     print(f"    {layout['mandir']}/man8/{release.COMMAND_NAME}.8")
     print(f"    {layout['mandir']}/man5/{release.COMMAND_NAME}.conf.5")
     print(f"  refresh systemd units in {layout['systemd_unit_dir']}")
-    if current_schema and current_schema != release.SCHEMA_VERSION:
-        print(f"  back up the database and migrate schema {current_schema} -> (release schema)")
+    # The target's schema version lives inside the release tarball, which a dry
+    # run deliberately does not download, so this cannot be stated as fact.
+    if current_schema:
+        print(
+            f"  compare the release's schema version against this database (currently "
+            f"{current_schema}); if they differ, stop the collector, back up the "
+            f"database and migrate"
+        )
     else:
-        print("  leave the database schema unchanged (no backup needed)")
+        print("  create the database on first use (nothing to migrate yet)")
     print("  reload systemd")
     if systemd.is_active("mailut-audit.service"):
         print("  restart mailut-audit.service")
@@ -382,8 +400,17 @@ def _verify(config, layout: dict, expected_version: str, audit_was_active: bool)
                 version = db_mod.schema_version(conn)
             finally:
                 conn.close()
-            if version != migrations.LATEST and version != release.SCHEMA_VERSION:
-                failures.append(f"database schema is {version}")
+            # Ask the *newly installed* command what schema it expects. This
+            # process is still running the old release, so its own
+            # migrations.LATEST describes the version being replaced and would
+            # reject a correctly migrated database.
+            expected_schema = _installed_schema_version(layout)
+            if expected_schema is None:
+                failures.append("could not read the installed release's schema version")
+            elif version != expected_schema:
+                failures.append(
+                    f"database schema is {version}, the installed release expects {expected_schema}"
+                )
         except MailutError as exc:
             failures.append(f"database does not open: {exc}")
 

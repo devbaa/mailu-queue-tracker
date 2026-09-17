@@ -181,6 +181,12 @@ class EventStore:
         if event.action in ("accept", "deliver") and not self.config.get("audit", "store_accepted"):
             return {"status": "out_of_scope", "recipient": event.envelope_to, "reason": "accepted events disabled"}
 
+        # A scope cannot be *created* at a level the host forbids, but the host
+        # configuration can be tightened afterwards. Collect at the reduced
+        # level rather than dropping the evidence entirely -- and record the
+        # reduced level on the event, so `audit show` reports what was actually
+        # retained. `audit scopes` and `doctor` surface the discrepancy, so
+        # this never passes unnoticed.
         level = scope.level
         if level == "headers" and not self.config.get("audit", "allow_headers"):
             level = "metadata"

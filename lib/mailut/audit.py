@@ -116,7 +116,14 @@ def cmd_scopes(args, config, conn) -> int:
         return 0
 
     if args.json:
-        json.dump([s.as_dict() for s in scopes], sys.stdout, indent=2, sort_keys=True)
+        payload = []
+        for scope in scopes:
+            record = scope.as_dict()
+            record["effective_level"] = (
+                _effective_level(scope.level, config) if scope.included else None
+            )
+            payload.append(record)
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
         return 0
 
@@ -126,14 +133,25 @@ def cmd_scopes(args, config, conn) -> int:
         return 0
 
     rows = []
+    degraded = 0
     for scope in scopes:
         included = scope.included
+        level = scope.level
+        if included:
+            effective = _effective_level(level, config)
+            if effective != level:
+                # Show what is actually being collected, not just what was asked
+                # for: the host configuration can be tightened after a scope is
+                # created, and an operator must not read "headers" here while
+                # only metadata is being retained.
+                level = f"{effective} (asked {level})"
+                degraded += 1
         rows.append(
             (
                 scope.scope_type,
                 scope.label(),
                 scope.mode,
-                scope.level if included else "-",
+                level if included else "-",
                 f"{scope.retention_days}d" if included else "-",
                 (f"{scope.message_retention_days}d" if scope.message_retention_days and included else "-"),
             )
@@ -141,4 +159,25 @@ def cmd_scopes(args, config, conn) -> int:
     print(columns(rows, ["TYPE", "VALUE", "MODE", "LEVEL", "RETENTION", "MSG-RETENTION"]))
     print()
     print("Most specific rule wins (email > domain > all); at equal specificity, exclude wins.")
+    if degraded:
+        print()
+        print(
+            f"warning: {degraded} scope(s) ask for a collection level this host disables "
+            f"and are collecting metadata only.",
+            file=sys.stderr,
+        )
+        print(
+            "         Re-enable audit.allow_headers / audit.allow_messages, or lower the "
+            "scope's --level.",
+            file=sys.stderr,
+        )
     return 0
+
+
+def _effective_level(level: str, config) -> str:
+    """The level actually collected, given what the host currently permits."""
+    if level == "headers" and not config.get("audit", "allow_headers"):
+        return "metadata"
+    if level == "message" and not config.get("audit", "allow_messages"):
+        return "metadata"
+    return level

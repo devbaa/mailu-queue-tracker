@@ -143,8 +143,13 @@ Turning this off makes it impossible to tell "this server never saw it" from
 .B allow_headers
 Permit scopes to collect at level
 .BR headers .
-When false, a scope may not ask for it and the request fails rather than being
-downgraded. Default:
+When false, a new scope may not ask for it: the request fails rather than being
+downgraded. A scope created while it was permitted keeps its recorded level but
+collects only metadata, which
+.B mailut audit scopes
+and
+.B mailut doctor
+both report. Default:
 .IR true .
 .TP
 .B allow_messages
@@ -180,12 +185,23 @@ Default:
 .SH SECTION [collector]
 .TP
 .B bind
-Address the audit collector listens on. The collector is unauthenticated, so
-this should stay on the loopback address; anything else requires
-.B \-\-allow\-remote
-and is reported as a warning by
-.BR "mailut doctor" .
-Default:
+Address the audit collector listens on. The collector is unauthenticated, so it
+must not be reachable from other hosts.
+.IP
+A loopback address is the safest, but the Rspamd exporter runs inside the
+antispam container and cannot reach the host's loopback. For that case bind to
+an address the container can reach and the outside world cannot \(em normally
+the Docker bridge gateway, such as
+.IR 172.17.0.1 .
+Whatever you choose must match the
+.B url
+in the exporter snippet.
+.IP
+A wildcard
+.RB ( 0.0.0.0 ", " :: )
+or a publicly routable address is refused unless
+.B "mailut audit collect \-\-allow\-remote"
+is used deliberately. Default:
 .IR 127.0.0.1 .
 .TP
 .B port

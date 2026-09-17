@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import ipaddress as _ipaddress
 import re
 import sys
 
@@ -242,6 +243,37 @@ def human_bytes(count) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024.0
     return f"{size:.1f} TB"
+
+
+_LOOPBACK_NAMES = ("localhost", "localhost.localdomain")
+
+
+def classify_bind_address(address: str) -> str:
+    """Classify a listen address as loopback, private, wildcard or public.
+
+    The collector is unauthenticated, so what matters is not "is this
+    127.0.0.1" but "can the outside world reach it".  On a normal Linux Docker
+    host the antispam container reaches the host over the bridge gateway (a
+    private address such as 172.17.0.1), which is the documented setup and is
+    not exposed off the host.  A wildcard or globally routable bind is.
+    """
+    text = str(address).strip().lower()
+    if text in _LOOPBACK_NAMES:
+        return "loopback"
+    if text in ("0.0.0.0", "::", "*", ""):
+        return "wildcard"
+    try:
+        parsed = _ipaddress.ip_address(text)
+    except ValueError:
+        # A hostname we cannot resolve here; treat it as unknown, not safe.
+        return "unknown"
+    if parsed.is_loopback:
+        return "loopback"
+    if parsed.is_unspecified:
+        return "wildcard"
+    if parsed.is_private or parsed.is_link_local:
+        return "private"
+    return "public"
 
 
 def confirm(prompt: str, *, assume_yes: bool = False, expect: str | None = None) -> bool:

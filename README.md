@@ -113,7 +113,13 @@ cd /opt/mailu && sudo docker compose restart antispam
 mailut audit doctor
 ```
 
-Details in [docs/audit.md](docs/audit.md).
+The antispam container cannot reach the host's loopback address, so the
+exporter's `url` and `collector.bind` must both name an address it *can* reach
+— usually the Docker bridge gateway, `172.17.0.1`. `mailut audit doctor` checks
+both halves: that an override in your Mailu tree targets the collector's port,
+and that the container can actually reach it. Full instructions in
+[docs/install.md](docs/install.md); audit details in
+[docs/audit.md](docs/audit.md).
 
 ### Two things that are not the same
 

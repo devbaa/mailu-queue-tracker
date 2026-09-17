@@ -112,6 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- version ------------------------------------------------------------
     version_parser = _add(sub, "version", "print the installed version")
+    version_parser.add_argument("--json", action="store_true",
+                                help="machine-readable output, including the schema version")
     version_parser.set_defaults(func=_cmd_version, needs_config=False)
 
     # -- status / doctor ----------------------------------------------------
@@ -344,9 +346,13 @@ def _build_audit(sub) -> None:
 
     collect_parser = _add(
         audit_sub, "collect", "run the audit collector (foreground daemon)",
-        "Listens for Rspamd metadata-exporter posts on the configured local address and\n"
+        "Listens for Rspamd metadata-exporter posts on the configured address and\n"
         "polls the Mailu smtp container log for SMTP evidence. Run by\n"
-        "mailut-audit.service; logs to stdout/stderr (journald).",
+        "mailut-audit.service; logs to stdout/stderr (journald).\n"
+        "\n"
+        "The endpoint is unauthenticated, so a loopback or host-local (Docker\n"
+        "bridge) bind is accepted and a wildcard or public one is refused unless\n"
+        "--allow-remote is given.",
         parent_key="audit",
     )
     collect_parser.add_argument("--verbose", action="store_true", help="debug logging")
@@ -355,7 +361,7 @@ def _build_audit(sub) -> None:
     collect_parser.add_argument("--no-log-poll", action="store_true",
                                 help="do not read the smtp log; HTTP ingestion only")
     collect_parser.add_argument("--allow-remote", action="store_true",
-                                help="permit a non-localhost bind address")
+                                help="permit a wildcard or publicly routable bind address")
     collect_parser.set_defaults(func=_lazy("collector", "cmd_collect"))
 
     ingest_parser = _add(
@@ -445,6 +451,30 @@ def _cmd_help(args, config=None):
 
 
 def _cmd_version(args, config=None):
+    if getattr(args, "json", False):
+        import json
+
+        from . import migrations
+
+        info = release.buildinfo()
+        json.dump(
+            {
+                "version": info["version"],
+                "commit": info["commit"],
+                "built_at": info["built_at"],
+                "installed": info["installed"],
+                # The schema this build knows how to migrate to. `mailut
+                # upgrade` reads it from the *newly installed* command, because
+                # the upgrading process still has the old release's constants
+                # loaded and cannot judge the new one by them.
+                "schema_version": migrations.LATEST,
+            },
+            sys.stdout,
+            indent=2,
+            sort_keys=True,
+        )
+        sys.stdout.write("\n")
+        return 0
     print(release.version_string())
     return 0
 

@@ -20,7 +20,13 @@ from . import migrations, payloads as payload_store, release, systemd
 from . import scopes as scope_store
 from .db import Database, schema_version
 from .mailu import Mailu
-from .util import EXIT_CHECK_FAILED, MailutError, human_bytes, sanitize
+from .util import (
+    EXIT_CHECK_FAILED,
+    MailutError,
+    classify_bind_address,
+    human_bytes,
+    sanitize,
+)
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
@@ -269,14 +275,109 @@ def collect_checks(config) -> list[dict]:
             scope_status = FAIL
     _check(results, "audit scopes", scope_status, scope_note)
 
-    rspamd_snippet = Path(release.layout()["datadir"]) / "rspamd" / "mailut-exporter.conf"
-    _check(
-        results,
-        "rspamd exporter example",
-        OK if rspamd_snippet.is_file() else WARN,
-        str(rspamd_snippet) if rspamd_snippet.is_file() else "example snippet not installed",
-    )
+    _check_rspamd(results, config, mailu, docker)
+    _check_degraded_scopes(results, config, database)
     return results
+
+
+def _check_rspamd(results, config, mailu, docker) -> None:
+    """Check the Rspamd wiring itself, not merely that our example exists.
+
+    The example snippet under <datadir> is installed by `make install` and is
+    always present, so its existence says nothing about whether this host is
+    actually exporting anything.  What matters is whether an override exists in
+    the Mailu tree that points at this collector, and whether the antispam
+    container can reach it.
+    """
+    override_dir = mailu.rspamd_override_dir
+    port = config.get("collector", "port")
+    configured = None
+    if override_dir.is_dir():
+        for candidate in sorted(override_dir.glob("*.conf")):
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "metadata_exporter" in text and f":{port}" in text:
+                configured = candidate
+                break
+    if configured:
+        _check(results, "rspamd exporter", OK, f"{configured} posts to port {port}")
+    elif override_dir.is_dir():
+        _check(
+            results,
+            "rspamd exporter",
+            WARN,
+            f"no metadata_exporter targeting port {port} in {override_dir}; "
+            f"Rspamd decisions will not be collected (copy "
+            f"{Path(release.layout()['datadir']) / 'rspamd' / 'mailut-exporter.conf'} there)",
+        )
+    else:
+        _check(
+            results,
+            "rspamd exporter",
+            WARN,
+            f"{override_dir} does not exist; Rspamd decisions will not be collected",
+        )
+
+    # Reachability from the container is the other half, and the half that the
+    # bind address most often gets wrong.
+    if not (docker and mailu.compose_dir_ok()):
+        _check(results, "rspamd -> collector", WARN,
+               "skipped: docker or compose directory unavailable")
+        return
+    bind = config.get("collector", "bind")
+    target = "127.0.0.1" if classify_bind_address(bind) == "loopback" else bind
+    url = f"http://{target}:{port}/health"
+    reachable, detail = mailu.probe_url_from_service(mailu.antispam_service, url)
+    if reachable is True:
+        _check(results, "rspamd -> collector", OK, f"{mailu.antispam_service} can reach {url}")
+    elif reachable is False:
+        _check(
+            results,
+            "rspamd -> collector",
+            WARN,
+            f"{mailu.antispam_service} cannot reach {url} ({detail}); "
+            "the exporter's url and collector.bind must agree, and the bind "
+            "address must be reachable from the container",
+        )
+    else:
+        _check(results, "rspamd -> collector", WARN, f"not verified: {detail}")
+
+
+def _check_degraded_scopes(results, config, database) -> None:
+    """Warn when a scope asks for more than the host currently permits."""
+    if not config.database.exists():
+        return
+    try:
+        conn = database.open_readonly()
+    except MailutError:
+        return
+    try:
+        if schema_version(conn) < 1:
+            return
+        degraded = []
+        for scope in scope_store.list_scopes(conn):
+            if not scope.included:
+                continue
+            if scope.level == "headers" and not config.get("audit", "allow_headers"):
+                degraded.append(f"{scope.scope_type} {scope.label()} (headers)")
+            elif scope.level == "message" and not config.get("audit", "allow_messages"):
+                degraded.append(f"{scope.scope_type} {scope.label()} (message)")
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+    if degraded:
+        _check(
+            results,
+            "scope levels",
+            WARN,
+            f"{len(degraded)} scope(s) request a level this host disables and are "
+            f"collecting metadata only: {', '.join(sanitize(d) for d in degraded[:5])}",
+        )
+    else:
+        _check(results, "scope levels", OK, "every scope's level is permitted by this host")
 
 
 def cmd_doctor(args, config) -> int:

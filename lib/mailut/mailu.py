@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +30,12 @@ class Mailu:
         self.compose = config.compose_argv
         self.smtp_service = config.get("mailu", "smtp_service")
         self.front_service = config.get("mailu", "front_service")
+        self.antispam_service = config.get("mailu", "antispam_service")
+
+    @property
+    def rspamd_override_dir(self):
+        """Where Mailu expects Rspamd overrides to be dropped."""
+        return self.compose_dir / "overrides" / "rspamd"
 
     # -- primitives ----------------------------------------------------------
     def available(self) -> bool:
@@ -147,6 +154,35 @@ class Mailu:
                 + (f": {detail[-1]}" if detail else "")
             )
         return proc.stdout
+
+
+    def probe_url_from_service(self, service: str, url: str, *, timeout: int = 20):
+        """Can ``service`` reach ``url``?  Returns (True/False/None, detail).
+
+        ``None`` means "could not determine" — the container has no HTTP client
+        we recognise, or docker itself failed.  That is reported as unverified
+        rather than as a failure, because it says nothing about the wiring.
+        """
+        script = (
+            "if command -v curl >/dev/null 2>&1; then "
+            f"curl -fsS -m 5 -o /dev/null {shlex.quote(url)} && echo MAILUT_OK; "
+            "elif command -v wget >/dev/null 2>&1; then "
+            f"wget -q -T 5 -O /dev/null {shlex.quote(url)} && echo MAILUT_OK; "
+            "else echo MAILUT_NO_CLIENT; fi"
+        )
+        try:
+            proc = self.exec_service(service, ["sh", "-c", script], timeout=timeout)
+        except MailutError as exc:
+            return None, str(exc)
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if "MAILUT_NO_CLIENT" in output:
+            return None, f"no curl or wget in the {service} container"
+        if "MAILUT_OK" in output:
+            return True, "ok"
+        if proc.returncode != 0 and not output.strip():
+            return None, f"docker exec into {service} failed"
+        detail = (output.strip().splitlines() or ["no response"])[-1]
+        return False, detail[:200]
 
 
 def queue_entry_recipients(entry: dict) -> list[str]:

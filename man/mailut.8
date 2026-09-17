@@ -112,7 +112,20 @@ and
 .BR "\-\-level message" ).
 A level that the host disables in
 .BR mailut.conf (5)
-is rejected with an error; it is never silently downgraded.
+is rejected with an error; the request is never silently downgraded.
+.IP
+If the host configuration is tightened
+.I after
+a scope was created, the scope keeps its recorded level but collection falls
+back to
+.BR metadata .
+That is never silent either:
+.B mailut audit scopes
+shows the effective level as
+.RI ` "metadata (asked headers)" '
+with a warning, and
+.B mailut doctor
+reports it.
 .TP
 .B mailut audit remove all
 .TQ
@@ -235,10 +248,20 @@ events are kept for the next run.
 .TP
 .B mailut audit collect
 Run the collector in the foreground. It listens for Rspamd metadata-exporter
-posts on the configured local address and polls the Mailu smtp container log
-for the SMTP evidence Rspamd never sees. This is what
+posts on the configured address and polls the Mailu smtp container log for the
+SMTP evidence Rspamd never sees. This is what
 .B mailut\-audit.service
 runs; logging goes to stdout and stderr, therefore to the journal.
+.IP
+The endpoint is unauthenticated, so the bind address is checked: a loopback
+address, or a host-local one such as the Docker bridge gateway that only
+containers on this host can reach, is accepted; a wildcard
+.RB ( 0.0.0.0 )
+or a publicly routable address is refused unless
+.B \-\-allow\-remote
+is given.
+.B \-\-once
+performs exactly one log poll and exits, for diagnostics.
 .TP
 .B mailut audit ingest {rspamd|postfix} [\-\-file PATH]
 Ingest exporter payloads (JSON or JSON Lines) or Postfix log lines from a file
@@ -360,7 +383,27 @@ of every unit this application owns.
 Read-only diagnostics. Checks the Python version, the Docker executable and
 compose directory, the configured services, SQLite readability, writability and
 schema, filesystem permissions, the collector port and \(em where systemd
-exists \(em the units. It changes nothing and exits
+exists \(em the units.
+.IP
+Two checks cover the Rspamd wiring, which is the part most often left half
+finished.
+.B "rspamd exporter"
+looks for a
+.B metadata_exporter
+under
+.I <compose_dir>/overrides/rspamd/
+that targets this collector's port; the example shipped under the data
+directory is deliberately not treated as evidence of anything, since
+.B make install
+always puts it there.
+.B "rspamd -> collector"
+makes an HTTP request to the collector
+.I from inside
+the antispam container, and reports "not verified" rather than success when the
+container has no HTTP client.
+.IP
+A further check reports scopes whose collection level the host currently
+disables. It changes nothing and exits
 .B 4
 when a critical check fails.
 .SH LIFECYCLE COMMANDS
@@ -371,6 +414,12 @@ Print the installed version, for example
 or
 .RI ` "mailut 1.0.0 (a1b2c3d)" '.
 This works without git and without the source checkout.
+.B \-\-json
+additionally reports the database schema version this build expects, which is
+how
+.B mailut upgrade
+verifies a migration: the upgrading process still has the outgoing release
+loaded and must not judge the incoming one by its own constants.
 .TP
 .B mailut upgrade
 Install a newer release from the project's public GitHub releases. No GitHub
@@ -584,11 +633,13 @@ and 0700 and owned by root.
 .PP
 The collector is
 .B unauthenticated
-and binds to 127.0.0.1 by default. Do not expose it. Binding elsewhere requires
+and binds to 127.0.0.1 by default. The Rspamd exporter runs inside a container
+and cannot reach the host's loopback, so the documented setup binds instead to
+the Docker bridge gateway \(em an address reachable by containers on this host
+and by nothing else, provided the port is not forwarded. A wildcard or publicly
+routable bind is refused unless
 .B \-\-allow\-remote
-and is reported as a warning by
-.BR "mailut doctor" .
-Request bodies are size-limited.
+is given deliberately. Request bodies are size-limited.
 .PP
 Ingested values \(em senders, recipients, HELO names, subjects, Rspamd symbol
 options and Postfix rejection text \(em are chosen by the remote side. They are

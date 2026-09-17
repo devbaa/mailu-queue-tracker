@@ -361,6 +361,74 @@ class UpgradeFlowTests(unittest.TestCase):
             conn.close()
         self.assertEqual(rows, [("example.com",)])
 
+    def test_a_real_migration_is_accepted_by_verification(self):
+        """The upgrader must judge the DB by the NEW release's schema, not its own.
+
+        The pre-existing schema test only rewrote the SCHEMA_VERSION marker, so
+        the installed code still migrated to schema 1 and verification compared
+        1 against 1 -- it passed while the real path was broken. This publishes
+        a release that genuinely migrates the database to 2, which the old
+        process's own constants would reject.
+        """
+        def add_migration(tree):
+            path = tree / "lib" / "mailut" / "migrations.py"
+            text = path.read_text(encoding="utf-8")
+            text = text.replace(
+                "LATEST = max(version for version, _desc, _sql in MIGRATIONS)",
+                'MIGRATIONS.append((2, "test migration", '
+                '("CREATE TABLE later_addition (id INTEGER PRIMARY KEY)",)))\n'
+                "LATEST = max(version for version, _desc, _sql in MIGRATIONS)",
+            )
+            path.write_text(text, encoding="utf-8")
+            release = tree / "lib" / "mailut" / "release.py"
+            release.write_text(
+                release.read_text(encoding="utf-8").replace(
+                    "SCHEMA_VERSION = 1", "SCHEMA_VERSION = 2"
+                ),
+                encoding="utf-8",
+            )
+
+        self.staged("--config", str(self.conf), "audit", "add", "domain", "example.com", expect=0)
+        self.publish("1.1.0", schema_version=2, mutate=add_migration)
+
+        proc = self.upgrade()
+        self.assertIn("Database schema: 1 -> 2", proc.stdout)
+        self.assertIn("Upgrade complete.", proc.stdout)
+        self.assertNotIn("post-upgrade check failed", proc.stderr)
+
+        # The database really did migrate, and the scope survived.
+        version = self.staged("version", "--json", expect=0)
+        self.assertEqual(json.loads(version.stdout)["schema_version"], 2)
+        scopes = self.staged("--config", str(self.conf), "audit", "scopes", expect=0)
+        self.assertIn("example.com", scopes.stdout)
+
+    def test_a_failed_migration_is_reported_and_leaves_a_backup(self):
+        def broken_migration(tree):
+            path = tree / "lib" / "mailut" / "migrations.py"
+            text = path.read_text(encoding="utf-8").replace(
+                "LATEST = max(version for version, _desc, _sql in MIGRATIONS)",
+                'MIGRATIONS.append((2, "broken", ("THIS IS NOT SQL",)))\n'
+                "LATEST = max(version for version, _desc, _sql in MIGRATIONS)",
+            )
+            path.write_text(text, encoding="utf-8")
+
+        self.staged("--config", str(self.conf), "audit", "add", "all", expect=0)
+        self.publish("1.1.0", schema_version=2, mutate=broken_migration)
+
+        proc = self.upgrade(expect=1)
+        self.assertIn("Database migration FAILED", proc.stderr)
+        self.assertIn("pre-migration backup", proc.stderr)
+        backups = list((self.root / "var/lib/mailut/backups").glob("*.sqlite3"))
+        self.assertEqual(len(backups), 1)
+
+    def test_dry_run_does_not_assert_an_unknown_schema_outcome(self):
+        """A dry run has not downloaded the artifact, so it cannot know."""
+        self.staged("--config", str(self.conf), "audit", "add", "all", expect=0)
+        self.publish("1.1.0")
+        proc = self.upgrade("--dry-run")
+        self.assertNotIn("leave the database schema unchanged", proc.stdout)
+        self.assertIn("if they differ", proc.stdout)
+
     def test_no_backup_when_the_schema_is_unchanged(self):
         self.staged("--config", str(self.conf), "audit", "add", "all", expect=0)
         self.publish("1.1.0", schema_version=1)

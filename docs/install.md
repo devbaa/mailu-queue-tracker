@@ -121,18 +121,36 @@ sudo cp /usr/local/share/mailut/rspamd/mailut-exporter.conf \
         /opt/mailu/overrides/rspamd/
 ```
 
-Edit the `url` in that file so the antispam container can reach the collector on
-the host. On a normal Linux Docker install the host is the bridge gateway,
-usually `172.17.0.1`; check yours with:
+The container cannot reach the host's loopback address, so **the default
+`bind = 127.0.0.1` does not work for this** — both ends have to point at an
+address the container can reach. On a normal Linux Docker install that is the
+bridge gateway, usually `172.17.0.1`:
 
 ```bash
-ip -4 addr show docker0
+ip -4 addr show docker0        # find your gateway address
 ```
 
-The address must match `collector.bind`/`collector.port` in `mailut.conf`, and
-must not be reachable from outside the host — the collector is unauthenticated.
+Set **both** sides to it:
+
+```ini
+# /etc/mailut/mailut.conf
+[collector]
+bind = 172.17.0.1
+port = 8765
+```
+
+```text
+# the url in mailut-exporter.conf
+url = "http://172.17.0.1:8765/rspamd";
+```
+
+That address is reachable by containers on this host and by nothing else, as
+long as your firewall does not forward the port — which matters, because the
+collector is unauthenticated. `mailut` refuses a wildcard (`0.0.0.0`) or a
+publicly routable bind unless you pass `--allow-remote` deliberately.
+
 If your Mailu network is not the default bridge, use that network's gateway
-address instead and make sure the host firewall only allows it.
+address instead.
 
 Then restart the container and verify:
 
@@ -142,9 +160,17 @@ mailut audit doctor
 ```
 
 `doctor` checks that the database is writable, the collector answers, the Mailu
-compose directory looks right, the smtp service is reachable, the exporter
-example is installed and the purge timer is active. It changes nothing and
+compose directory looks right and the smtp service is reachable; that an Rspamd
+override in your Mailu tree actually targets this collector's port; that the
+antispam container can reach the collector; that no scope asks for a collection
+level the host disables; and the state of the units. It changes nothing and
 exits 4 if a critical check fails.
+
+The two Rspamd checks are the ones that catch a half-finished setup: `rspamd
+exporter` looks for a `metadata_exporter` in `<compose_dir>/overrides/rspamd/`
+pointing at your collector port, and `rspamd -> collector` runs an HTTP request
+*from inside the antispam container*. If the container has neither `curl` nor
+`wget`, that second check reports "not verified" rather than passing.
 
 ## Without systemd
 

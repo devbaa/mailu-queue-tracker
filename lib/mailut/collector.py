@@ -32,7 +32,14 @@ from .events import EventStore
 from .ingest import postfix as postfix_ingest
 from .ingest import rspamd as rspamd_ingest
 from .mailu import Mailu
-from .util import MailutError, from_iso, parse_duration, to_iso, utcnow
+from .util import (
+    MailutError,
+    classify_bind_address,
+    from_iso,
+    parse_duration,
+    to_iso,
+    utcnow,
+)
 
 log = logging.getLogger("mailut.collector")
 
@@ -323,14 +330,45 @@ def cmd_collect(args, config) -> int:
 
     bind = config.get("collector", "bind")
     port = config.get("collector", "port")
-    if bind not in ("127.0.0.1", "::1", "localhost") and not args.allow_remote:
+    exposure = classify_bind_address(bind)
+    if exposure in ("wildcard", "public", "unknown") and not args.allow_remote:
         raise MailutError(
-            f"refusing to bind the collector to {bind}: it is unauthenticated. "
-            "Keep collector.bind on localhost, or pass --allow-remote if it is "
-            "firewalled and you accept the risk."
+            f"refusing to bind the collector to {bind}: it is unauthenticated and "
+            f"that address is {'reachable from other hosts' if exposure != 'unknown' else 'not a literal address we can classify'}.\n"
+            "Use the loopback address, or the Docker bridge gateway so only "
+            "containers on this host can reach it (see the Rspamd section of "
+            "docs/install.md), or pass --allow-remote if it is firewalled and "
+            "you accept the risk."
+        )
+    if exposure == "private":
+        # The documented Linux setup: the antispam container reaches the host
+        # over the bridge gateway. Not loopback, but not exposed off the host.
+        log.info(
+            "collector bound to %s, a host-local address reachable by containers "
+            "on this host; make sure your firewall does not expose port %d",
+            bind, port,
         )
 
     stop = threading.Event()
+
+    if args.once:
+        # Diagnostics: do exactly one log poll, synchronously, and exit. No
+        # server, no background thread -- "once" has to mean once.
+        try:
+            if not config.get("collector", "ingest_smtp_logs") or args.no_log_poll:
+                log.info("smtp log ingestion is disabled; nothing to poll")
+                return 0
+            summary = LogPoller(ingestor, stop).poll_once()
+            log.info(
+                "smtp log: %d line(s), %d stored, %d duplicate, %d out of scope, "
+                "%d enriched, %d unparsed",
+                summary["lines"], summary["stored"], summary["duplicate"],
+                summary["out_of_scope"], summary["enriched"], summary["unparsed"],
+            )
+            return 0
+        finally:
+            ingestor.close()
+
     try:
         server = _Server((bind, port), ingestor, config.get("collector", "max_body_bytes"))
     except OSError as exc:
@@ -351,13 +389,6 @@ def cmd_collect(args, config) -> int:
     signal.signal(signal.SIGINT, _shutdown)
 
     log.info("collector listening on %s:%d", bind, port)
-    if args.once:
-        if poller is not None:
-            poller.join(timeout=30)
-        stop.set()
-        server.server_close()
-        ingestor.close()
-        return 0
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
