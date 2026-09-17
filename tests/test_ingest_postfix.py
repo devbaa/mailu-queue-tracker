@@ -1,0 +1,189 @@
+"""Postfix/Mailu SMTP log parsing."""
+
+import datetime
+
+from helpers import FIXTURES, MailutTestCase
+
+from mailut.events import Event
+from mailut.ingest import postfix
+
+
+def parse(line):
+    return postfix.parse_line(line)
+
+
+PRE_DATA_REJECT = (
+    "smtp-1  | 2026-09-17T11:03:21.000000000Z Sep 17 11:03:21 mail postfix/smtpd[111]: "
+    "NOQUEUE: reject: RCPT from unknown[203.0.113.4]: 550 5.7.1 <user@example.com>: "
+    "Recipient address rejected: Access denied; from=<sender@example.net> "
+    "to=<user@example.com> proto=ESMTP helo=<mx.example.net>"
+)
+
+
+class PostfixParseTests(MailutTestCase):
+    def test_pre_data_rejection(self):
+        event = parse(PRE_DATA_REJECT)
+        self.assertIsInstance(event, Event)
+        self.assertEqual(event.stage, "rcpt")
+        self.assertEqual(event.action, "policy_reject")
+        self.assertEqual(event.envelope_from, "sender@example.net")
+        self.assertEqual(event.envelope_to, "user@example.com")
+        self.assertEqual(event.remote_ip, "203.0.113.4")
+        self.assertEqual(event.helo, "mx.example.net")
+        self.assertEqual(event.smtp_code, "550")
+        self.assertEqual(event.smtp_enhanced_code, "5.7.1")
+        self.assertIn("Recipient address rejected", event.reason)
+
+    def test_pre_data_rejection_has_no_subject_or_message_id(self):
+        event = parse(PRE_DATA_REJECT)
+        self.assertTrue(event.pre_data)
+        self.assertIsNone(event.subject)
+        self.assertIsNone(event.message_id)
+        self.assertIsNone(event.header_from)
+        self.assertIsNone(event.raw_message)
+
+    def test_timestamp_is_taken_from_the_docker_stamp(self):
+        event = parse(PRE_DATA_REJECT)
+        self.assertEqual(
+            event.occurred_at,
+            datetime.datetime(2026, 9, 17, 11, 3, 21, tzinfo=datetime.timezone.utc),
+        )
+
+    def test_connect_stage_rejection_has_no_recipient(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:04:02.000000000Z Sep 17 11:04:02 mail postfix/smtpd[111]: "
+            "NOQUEUE: reject: CONNECT from unknown[203.0.113.9]: 554 5.7.1 Client host rejected: "
+            "Access denied; proto=SMTP"
+        )
+        event = parse(line)
+        self.assertEqual(event.stage, "connect")
+        self.assertIsNone(event.envelope_to)
+        self.assertEqual(event.remote_ip, "203.0.113.9")
+
+    def test_temporary_rejection_is_soft(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:05:10.000000000Z Sep 17 11:05:10 mail postfix/smtpd[112]: "
+            "NOQUEUE: reject: MAIL from unknown[203.0.113.11]: 450 4.7.1 Service unavailable; "
+            "from=<spammer@example.net> proto=ESMTP helo=<evil.example.net>"
+        )
+        event = parse(line)
+        self.assertEqual(event.stage, "mail")
+        self.assertEqual(event.action, "soft_reject")
+
+    def test_greylisting_is_classified_as_greylist(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:06:00.000000000Z Sep 17 11:06:00 mail postfix/smtpd[113]: "
+            "NOQUEUE: reject: RCPT from mx.example.net[203.0.113.42]: 450 4.7.1 "
+            "<user@example.com>: Recipient address rejected: Greylisting in effect, please come "
+            "back later; from=<sender@example.net> to=<user@example.com> proto=ESMTP "
+            "helo=<mx.example.net>"
+        )
+        event = parse(line)
+        self.assertEqual(event.action, "greylist")
+
+    def test_milter_reject_after_data(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:07:15.000000000Z Sep 17 11:07:15 mail postfix/smtpd[114]: "
+            "4XyZ12345: milter-reject: END-OF-MESSAGE from mx.example.net[203.0.113.77]: 5.7.1 "
+            "Gtube pattern; from=<virus@example.net> to=<user@example.com> proto=ESMTP "
+            "helo=<mx.example.net>"
+        )
+        event = parse(line)
+        self.assertEqual(event.stage, "data")
+        self.assertEqual(event.action, "reject")
+        self.assertEqual(event.queue_id, "4XyZ12345")
+        self.assertEqual(event.smtp_enhanced_code, "5.7.1")
+        self.assertFalse(event.pre_data)
+
+    def test_local_delivery_is_an_event(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:08:02.000000000Z Sep 17 11:08:02 mail postfix/lmtp[122]: "
+            "4AbCd67890: to=<user@example.com>, relay=imap[192.168.203.4]:2525, delay=1.2, "
+            "dsn=2.0.0, status=sent (250 2.0.0 <user@example.com> jOe0 Saved)"
+        )
+        event = parse(line)
+        self.assertEqual(event.action, "deliver")
+        self.assertEqual(event.stage, "delivery")
+        self.assertEqual(event.envelope_to, "user@example.com")
+        self.assertEqual(event.queue_id, "4AbCd67890")
+
+    def test_outbound_relay_is_ignored(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:10:00.000000000Z Sep 17 11:10:00 mail postfix/smtp[140]: "
+            "4Out99999: to=<remote@example.org>, relay=mx.example.org[198.51.100.7]:25, "
+            "delay=2.0, dsn=2.0.0, status=sent (250 ok)"
+        )
+        self.assertIsNone(parse(line))
+
+    def test_authenticated_submission_is_ignored(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:09:00.000000000Z Sep 17 11:09:00 mail postfix/smtpd[130]: "
+            "NOQUEUE: reject: RCPT from unknown[203.0.113.55]: 550 5.1.1 <nobody@example.com>: "
+            "Recipient address rejected: User unknown; from=<sender@example.net> "
+            "to=<nobody@example.com> proto=ESMTP helo=<mx.example.net>, sasl_method=PLAIN, "
+            "sasl_username=agent@example.com"
+        )
+        self.assertIsNone(parse(line))
+
+    def test_reject_warning_is_not_a_rejection(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:13:00.000000000Z Sep 17 11:13:00 mail postfix/smtpd[152]: "
+            "NOQUEUE: reject_warning: RCPT from unknown[203.0.113.99]: 550 5.7.1 "
+            "<user@example.com>: would have been rejected; from=<sender@example.net> "
+            "to=<user@example.com> proto=ESMTP helo=<mx.example.net>"
+        )
+        self.assertIsNone(parse(line))
+
+    def test_message_id_enrichment(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:08:00.000000000Z Sep 17 11:08:00 mail postfix/cleanup[120]: "
+            "4AbCd67890: message-id=<abc123@example.net>"
+        )
+        result = parse(line)
+        self.assertEqual(result, {"queue_id": "4AbCd67890", "message_id": "abc123@example.net"})
+
+    def test_qmgr_size_enrichment(self):
+        line = (
+            "smtp-1  | 2026-09-17T11:08:01.000000000Z Sep 17 11:08:01 mail postfix/qmgr[121]: "
+            "4AbCd67890: from=<sender@example.net>, size=4096, nrcpt=1 (queue active)"
+        )
+        self.assertEqual(parse(line), {"queue_id": "4AbCd67890", "message_size": 4096})
+
+    # -- robustness ---------------------------------------------------------
+    def test_malformed_lines_do_not_crash(self):
+        for line in (
+            "",
+            "   ",
+            "not a log line",
+            "smtp-1  | garbage",
+            "smtp-1  | 2026-09-17T11:11:01.000000000Z Sep 17 11:11:01 mail postfix/smtpd[150]: NOQUEUE: reject:",
+            "smtp-1  | \x00\x01\x02 postfix/smtpd[1]: NOQUEUE: reject: RCPT from",
+            "postfix/smtpd[1]:",
+            "a" * 10000,
+            "smtp-1  | 2026-99-99T99:99:99Z Sep 99 99:99:99 mail postfix/smtpd[1]: NOQUEUE: reject: RCPT from x[1.2.3.4]: 550",
+        ):
+            result = parse(line)
+            self.assertTrue(
+                result is None or isinstance(result, (Event, dict)),
+                f"unexpected result for {line[:40]!r}: {result!r}",
+            )
+
+    def test_syslog_timestamp_without_docker_stamp(self):
+        line = (
+            "Sep 17 11:03:21 mail postfix/smtpd[111]: NOQUEUE: reject: RCPT from "
+            "unknown[203.0.113.4]: 550 5.7.1 <user@example.com>: Recipient address rejected: "
+            "Access denied; from=<sender@example.net> to=<user@example.com> proto=ESMTP"
+        )
+        event = parse(line)
+        self.assertIsInstance(event, Event)
+        self.assertEqual(event.occurred_at.hour, 11)
+        self.assertEqual(event.occurred_at.minute, 3)
+
+    def test_whole_fixture_file_parses_without_error(self):
+        text = (FIXTURES / "smtp-inbound.log").read_text(encoding="utf-8")
+        events = 0
+        for line in text.splitlines():
+            result = parse(line)
+            if isinstance(result, Event):
+                events += 1
+        self.assertGreaterEqual(events, 5)
