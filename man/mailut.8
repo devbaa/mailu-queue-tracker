@@ -269,14 +269,41 @@ for why a merely private address, a
 .BR macvlan / ipvlan
 gateway, or an unrelated project's bridge does not qualify.
 .IP
-If
-.B collector.token_file
-is set, a client must present the token to submit evidence; if it is not, the
-collector logs a warning at startup, because anything able to reach the port
-could otherwise forge audit records. An unusable token file is a startup
-failure, never a silent fallback to accepting everything.
+A client must present the shared token to submit evidence. A missing or
+unusable token file is a startup failure, never a silent fallback to accepting
+everything; running without one requires
+.B collector.allow_unauthenticated
+and is warned about at every start. Create the token with
+.BR "mailut audit token generate" .
+.IP
 .B \-\-once
-performs exactly one log poll and exits, for diagnostics.
+performs exactly one log poll and exits, for diagnostics. It opens no socket,
+so neither the bind assessment nor the token is checked: reading the smtp log
+must keep working when Docker is unreachable, the antispam container is down or
+the token file is broken \(em which is when the diagnostic is most wanted.
+.TP
+.B mailut audit token generate [\-\-force] [\-\-if\-missing]
+Write a new random token to
+.B collector.token_file
+with mode 0600, creating the directory if needed, and print the
+.B user
+and
+.B password
+lines to add to the Rspamd exporter rule. An existing token is never replaced
+without
+.BR \-\-force ,
+because doing so stops Rspamd submitting until its
+.B password
+is updated to match.
+.B \-\-if\-missing
+succeeds quietly when a token already exists, which is what
+.B make enable
+uses.
+.TP
+.B mailut audit token show
+Print the current token on standard output, for pasting into the exporter rule.
+Warnings about the file's permissions go to standard error, so they cannot end
+up inside a configuration file.
 .TP
 .B mailut audit ingest {rspamd|postfix} [\-\-file PATH]
 Ingest exporter payloads (JSON or JSON Lines) or Postfix log lines from a file
@@ -669,13 +696,18 @@ unless
 is given deliberately. Request bodies are size-limited.
 .PP
 .B Who may submit.
-Set
-.B collector.token_file
-to require a shared token, presented as HTTP Basic credentials (what Rspamd's
-metadata_exporter can send) or as a Bearer header. Without it, any process that
-can reach the address above can post fabricated events into the audit trail,
-which defeats the purpose of keeping one. The token file must not be readable
-by other accounts. The unauthenticated
+Ingestion requires a shared token by default, presented as HTTP Basic
+credentials (what Rspamd's metadata_exporter can send) or as a Bearer header.
+The collector refuses to start without one rather than accepting anonymous
+submissions, because a trail that any process able to reach the port can write
+to is not evidence; opting out takes a deliberate
+.BR collector.allow_unauthenticated ,
+which
+.B mailut doctor
+warns about for as long as it is set. Create the token with
+.BR "mailut audit token generate" ;
+it must not be readable by other accounts, and one that is, is refused rather
+than used. The unauthenticated
 .I /health
 endpoint exposes liveness only; its counters require the token.
 .PP

@@ -350,9 +350,13 @@ def _build_audit(sub) -> None:
         "polls the Mailu smtp container log for SMTP evidence. Run by\n"
         "mailut-audit.service; logs to stdout/stderr (journald).\n"
         "\n"
-        "The endpoint is unauthenticated, so a loopback or host-local (Docker\n"
-        "bridge) bind is accepted and a wildcard or public one is refused unless\n"
-        "--allow-remote is given.",
+        "Submissions must carry the shared token (mailut audit token generate)\n"
+        "unless collector.allow_unauthenticated is set. The bind address must be\n"
+        "loopback or the gateway of a Docker bridge network the antispam container\n"
+        "is attached to; anything else is refused unless --allow-remote is given.\n"
+        "\n"
+        "--once opens no socket, so it checks neither of those: it only reads the\n"
+        "smtp log.",
         parent_key="audit",
     )
     collect_parser.add_argument("--verbose", action="store_true", help="debug logging")
@@ -363,6 +367,34 @@ def _build_audit(sub) -> None:
     collect_parser.add_argument("--allow-remote", action="store_true",
                                 help="permit a wildcard or publicly routable bind address")
     collect_parser.set_defaults(func=_lazy("collector", "cmd_collect"))
+
+    token_parser = _add(
+        audit_sub, "token", "manage the collector's shared ingestion token",
+        "The collector accepts audit evidence only from a client presenting this\n"
+        "token, so that another process on the same network cannot fabricate\n"
+        "records. Rspamd sends it as the password of its metadata_exporter rule.",
+        parent_key="audit",
+    )
+    token_sub = token_parser.add_subparsers(dest="token_command", metavar="COMMAND")
+
+    token_generate = _add(
+        token_sub, "generate", "create a new random token",
+        "Writes a fresh random token to collector.token_file (mode 0600), creating\n"
+        "the directory if needed. An existing token is never replaced silently.",
+        parent_key="audit token",
+    )
+    token_generate.add_argument("--force", action="store_true",
+                                help="replace an existing token (Rspamd must be updated too)")
+    token_generate.add_argument("--if-missing", action="store_true",
+                                help="succeed quietly when a token already exists")
+    token_generate.set_defaults(func=_lazy("tokencmd", "cmd_generate"))
+
+    token_show = _add(
+        token_sub, "show", "print the current token",
+        "Prints the token on stdout, for pasting into the exporter rule.",
+        parent_key="audit token",
+    )
+    token_show.set_defaults(func=_lazy("tokencmd", "cmd_show"))
 
     ingest_parser = _add(
         audit_sub, "ingest", "ingest events from a file or stdin",

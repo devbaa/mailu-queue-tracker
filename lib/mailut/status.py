@@ -28,7 +28,10 @@ from .util import (
     MailutError,
     classify_bind_address,
     human_bytes,
+    normalize_address,
+    same_address,
     sanitize,
+    url_host,
 )
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -357,9 +360,10 @@ def _check_rspamd(results, config, mailu, docker) -> None:
         target_port = endpoint.port or port
     else:
         bind = config.get("collector", "bind")
-        host = "127.0.0.1" if classify_bind_address(bind) == "loopback" else bind
+        host = collector_mod.local_host_for(bind) if classify_bind_address(bind) == "loopback" else bind
         target_port = port
-    url = f"http://{host}:{target_port}/health"
+    # urlsplit strips the brackets from an IPv6 literal, so put them back.
+    url = f"http://{url_host(host)}:{target_port}/health"
     reachable, detail = mailu.probe_url_from_service(mailu.antispam_service, url)
     if reachable is True:
         _check(results, "rspamd -> collector", OK, f"{mailu.antispam_service} can reach {url}")
@@ -421,24 +425,24 @@ def _check_exporter_credentials(results, config, path, text: str) -> None:
 
 def _check_collector_token(results, config) -> None:
     """Is ingestion authenticated, and is the secret stored safely?"""
-    configured = config.get("collector", "token_file")
-    if not configured:
+    if config.get("collector", "allow_unauthenticated"):
         _check(
             results,
             "collector token",
             WARN,
-            "collector.token_file is not set: anything that can reach the "
-            "collector can post fabricated audit evidence. Generate one with "
-            "`openssl rand -hex 32` and give Rspamd the same value "
-            "(see mailut.conf(5))",
+            "collector.allow_unauthenticated is set: anything that can reach the "
+            "collector can post fabricated audit evidence. Remove that setting "
+            "and run `mailut audit token generate`",
         )
         return
     try:
         collector_mod.read_token(config)
     except MailutError as exc:
-        _check(results, "collector token", FAIL, str(exc))
+        # The first line carries the problem; the rest is remediation, which
+        # doctor's one-line-per-check layout has no room for.
+        _check(results, "collector token", FAIL, str(exc).splitlines()[0])
         return
-    _check(results, "collector token", OK, f"ingestion requires the token in {configured}")
+    _check(results, "collector token", OK, f"ingestion requires the token in {config.token_file}")
 
 
 _EXPORTER_URL_RE = re.compile(r"""\burl\s*=\s*["']?(https?://[^"'\s;]+)""")
@@ -467,16 +471,12 @@ def _endpoint_mismatch(endpoint, config) -> str | None:
         return f"the collector listens on port {port}"
     if classify_bind_address(bind) == "wildcard":
         return None  # answers on every address
-    if host and host != bind:
+    if host and not same_address(host, bind) and host != bind:
         # A hostname may still resolve to the bind address; the reachability
         # probe below is the authority. Flag only literal-address conflicts.
-        try:
-            import ipaddress as _ip
-
-            _ip.ip_address(host)
-        except ValueError:
+        if normalize_address(host) is None:
             return None
-        if classify_bind_address(bind) == "loopback" and host in ("127.0.0.1", "::1"):
+        if classify_bind_address(bind) == "loopback" and classify_bind_address(host) == "loopback":
             return None
         return f"the collector is bound to {bind}"
     return None

@@ -248,14 +248,58 @@ def human_bytes(count) -> str:
 _LOOPBACK_NAMES = ("localhost", "localhost.localdomain")
 
 
+def normalize_address(text) -> str | None:
+    """The canonical form of an IP literal, or None if it is not one.
+
+    ``fd00:0:0:0:0:0:0:1`` and ``fd00::1`` are the same address written two
+    ways, so anything that compares addresses has to compare these rather than
+    the strings.
+    """
+    if text is None:
+        return None
+    try:
+        return str(_ipaddress.ip_address(str(text).strip()))
+    except ValueError:
+        return None
+
+
+def same_address(left, right) -> bool:
+    """Do two strings denote the same IP address?  (False for non-literals.)"""
+    first, second = normalize_address(left), normalize_address(right)
+    return first is not None and first == second
+
+
+def is_ipv6(address: str) -> bool:
+    parsed = None
+    try:
+        parsed = _ipaddress.ip_address(str(address).strip())
+    except ValueError:
+        return False
+    return parsed.version == 6
+
+
+def url_host(address: str) -> str:
+    """Format a host for a URL, bracketing IPv6 literals.
+
+    ``http://fd00::1:8765/`` is not a URL anybody can parse; the address has to
+    be written ``http://[fd00::1]:8765/``.
+    """
+    text = str(address).strip()
+    if is_ipv6(text) and not text.startswith("["):
+        return f"[{text}]"
+    return text
+
+
 def classify_bind_address(address: str) -> str:
     """Classify a listen address as loopback, private, wildcard or public.
 
-    The collector is unauthenticated, so what matters is not "is this
-    127.0.0.1" but "can the outside world reach it".  On a normal Linux Docker
-    host the antispam container reaches the host over the bridge gateway (a
-    private address such as 172.17.0.1), which is the documented setup and is
-    not exposed off the host.  A wildcard or globally routable bind is.
+    What matters is not "is this 127.0.0.1" but "can the outside world reach
+    it".  On a normal Linux Docker host the antispam container reaches the host
+    over a bridge gateway (a private address such as 172.17.0.1), which is the
+    documented setup and is not exposed off the host.  A wildcard or globally
+    routable bind is.  This is a purely syntactic classification; whether a
+    non-loopback address is genuinely host-local is decided by
+    :func:`mailut.collector.assess_bind`.
     """
     text = str(address).strip().lower()
     if text in _LOOPBACK_NAMES:

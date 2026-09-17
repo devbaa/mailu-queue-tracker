@@ -179,42 +179,66 @@ docker inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{
 
 Use a gateway from a line whose driver is `bridge`.
 
-### Require a token (recommended)
+### The shared token (required)
 
 Restricting the bind address controls *who can reach* the collector. It does
 not establish *who is posting*: another container on the same bridge could
 submit invented audit records. Since the point of the audit trail is to be
-evidence, give it a shared secret.
+evidence, the collector **will not start without a shared secret**.
 
 ```bash
-sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/mailut/collector.token'
+sudo mailut audit token generate
 ```
 
-```ini
-# /etc/mailut/mailut.conf
-[collector]
-token_file = /etc/mailut/collector.token
-```
+That writes a random token to `/etc/mailut/collector.token` (mode `0600`,
+directory created if needed) and prints the two lines to paste into the
+exporter rule:
 
 ```text
 # in mailut-exporter.conf, alongside the url
 user = "mailut";
-password = "<the contents of /etc/mailut/collector.token>";
+password = "<the generated token>";
 ```
+
+`make enable` runs `mailut audit token generate --if-missing`, so a fresh
+install gets one automatically; an existing token is never replaced unless you
+pass `--force`, because that would stop Rspamd submitting until its `password`
+is updated too. Print the current value with `mailut audit token show`.
 
 Rspamd's `metadata_exporter` cannot send an arbitrary header, but its HTTP
 backend does send Basic credentials built from `user`/`password`, and `mailut`
 accepts the token as the password. `Authorization: Bearer <token>` also works,
 which is easier with `curl`.
 
-The token file must be mode `0600`; `mailut` refuses to use one other accounts
-can read, and refuses to start if it is missing or empty rather than quietly
-accepting everything. `/health` stays unauthenticated so you can check wiring,
-but reports its counters only to authenticated callers. `mailut audit doctor`
-warns when no token is configured, and fails if the exporter's password does
-not match the one the collector expects — a mismatch that would otherwise show
-up only as silently missing evidence, since every export would be rejected
-with 401.
+`mailut` refuses to use a token file other accounts can read, and refuses to
+start on a missing, empty or too-short one rather than quietly accepting
+everything. `/health` stays unauthenticated so you can check wiring, but
+reports its counters only to authenticated callers.
+
+`mailut audit doctor` fails if the token is missing or unusable, and fails if
+the exporter's password does not match the one the collector expects — a
+mismatch that would otherwise show up only as silently missing evidence, since
+every export would be rejected with 401.
+
+If you genuinely need an open endpoint, say so explicitly:
+
+```ini
+[collector]
+allow_unauthenticated = true
+```
+
+`doctor` warns for as long as that is set, and the collector repeats the
+warning at every start.
+
+### IPv6
+
+An IPv6 bind works the same way: `bind = ::1`, or the IPv6 gateway of a bridge
+network the antispam container is attached to. Write the exporter URL with
+brackets, as URLs require:
+
+```text
+url = "http://[fd00::1]:8765/rspamd";
+```
 
 Then restart the container and verify:
 

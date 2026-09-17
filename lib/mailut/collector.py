@@ -24,6 +24,7 @@ import hmac
 import json
 import logging
 import signal
+import socket
 import sqlite3
 import stat
 import threading
@@ -41,8 +42,11 @@ from .util import (
     MailutError,
     classify_bind_address,
     from_iso,
+    is_ipv6,
     parse_duration,
+    same_address,
     to_iso,
+    url_host,
     utcnow,
 )
 
@@ -56,38 +60,52 @@ MIN_TOKEN_BYTES = 16
 
 
 def read_token(config) -> str | None:
-    """The shared ingestion token, or None when authentication is disabled.
+    """The shared ingestion token, or None when authentication is opted out of.
+
+    Authentication is on by default.  An audit trail that anyone able to reach
+    a port can write to is not evidence, so a missing token is a hard failure
+    rather than an open endpoint: running without one takes a deliberate
+    ``allow_unauthenticated = true``, not an unset setting.
 
     The token file is a secret, so it must not be readable by anyone but its
     owner: a group- or world-readable token is refused rather than used, since
     quietly accepting it would make the endpoint look authenticated while the
     secret sits where any local account can read it.
     """
-    configured = config.get("collector", "token_file")
-    if not configured:
+    if config.get("collector", "allow_unauthenticated"):
         return None
-    path = Path(configured)
+    path = config.token_file
     try:
         info = path.stat()
+    except FileNotFoundError as exc:
+        raise MailutError(
+            f"no collector token at {path}: the audit collector will not accept "
+            f"unauthenticated submissions.\n"
+            f"Create one with:  mailut audit token generate\n"
+            f"then put the same value in the Rspamd exporter's password field "
+            f"(see mailut.conf(5)).\n"
+            f"To run without authentication anyway, set allow_unauthenticated = "
+            f"true in the [collector] section."
+        ) from exc
     except OSError as exc:
-        raise MailutError(f"cannot read collector.token_file {path}: {exc}") from exc
+        raise MailutError(f"cannot read collector token {path}: {exc}") from exc
     if not stat.S_ISREG(info.st_mode):
-        raise MailutError(f"collector.token_file {path} is not a regular file")
+        raise MailutError(f"the collector token {path} is not a regular file")
     if info.st_mode & 0o077:
         raise MailutError(
-            f"collector.token_file {path} is readable by other accounts "
+            f"the collector token {path} is readable by other accounts "
             f"(mode {info.st_mode & 0o777:04o}); run: chmod 600 {path}"
         )
     try:
         token = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise MailutError(f"cannot read collector.token_file {path}: {exc}") from exc
+        raise MailutError(f"cannot read the collector token {path}: {exc}") from exc
     if not token:
-        raise MailutError(f"collector.token_file {path} is empty")
+        raise MailutError(f"the collector token {path} is empty; regenerate it with: mailut audit token generate --force")
     if len(token) < MIN_TOKEN_BYTES:
         raise MailutError(
             f"the token in {path} is only {len(token)} characters; use at least "
-            f"{MIN_TOKEN_BYTES} random ones (for example: openssl rand -hex 32)"
+            f"{MIN_TOKEN_BYTES} random ones (mailut audit token generate --force)"
         )
     if any(ch.isspace() for ch in token):
         raise MailutError(f"the token in {path} contains whitespace; it must be a single word")
@@ -370,6 +388,11 @@ class _Server(ThreadingHTTPServer):
         self.ingestor = ingestor
         self.max_body_bytes = max_body_bytes
         self.token = token
+        # ThreadingHTTPServer creates an AF_INET socket, so an IPv6 bind fails
+        # unless the family is switched first. assess_bind() accepts IPv6
+        # loopback and IPv6 bridge gateways, so this has to follow it.
+        if is_ipv6(address[0]):
+            self.address_family = socket.AF_INET6
         super().__init__(address, _Handler)
 
     def handle_error(self, request, client_address):  # pragma: no cover
@@ -457,7 +480,9 @@ def assess_bind(config, mailu=None) -> dict:
     mailu = mailu or Mailu(config)
     service = mailu.antispam_service
     gateways, error = mailu.service_bridge_gateways(service)
-    if bind in gateways:
+    # Compare as addresses, not strings: fd00::1 and fd00:0:0:0:0:0:0:1 are the
+    # same gateway written two ways.
+    if any(same_address(bind, gateway) for gateway in gateways):
         return {
             "category": "bridge-gateway",
             "detail": (
@@ -499,43 +524,16 @@ def cmd_collect(args, config) -> int:
             "(try: mailut audit add domain example.com)"
         )
 
-    bind = config.get("collector", "bind")
-    port = config.get("collector", "port")
-    token = read_token(config)  # fails loudly on an unusable token file
-    exposure = assess_bind(config)
-    if not exposure["safe"] and not args.allow_remote:
-        raise MailutError(
-            f"refusing to bind the collector to {bind}: {exposure['detail']}.\n"
-            "Use the loopback address, or the gateway of a Docker bridge network "
-            "the antispam container is attached to, so that only containers on "
-            "this host can reach it (see the Rspamd section of docs/install.md), "
-            "or pass --allow-remote if it is firewalled and you accept the risk.\n"
-            "Setting collector.token_file is worthwhile either way, but it does "
-            "not make a widely reachable bind address safe on its own."
-        )
-    if exposure["category"] == "bridge-gateway":
-        log.info(
-            "collector bound to %s:%d (%s); make sure your firewall does not "
-            "forward that port", bind, port, exposure["detail"],
-        )
-    elif not exposure["safe"]:
-        log.warning(
-            "collector bound to %s:%d with --allow-remote: %s.", bind, port, exposure["detail"],
-        )
-    if token is None:
-        log.warning(
-            "collector.token_file is not set: any process that can reach %s:%d "
-            "can post fabricated audit evidence. See mailut.conf(5).", bind, port,
-        )
-    else:
-        log.info("ingestion requires the shared token from %s",
-                 config.get("collector", "token_file"))
-
     stop = threading.Event()
 
     if args.once:
         # Diagnostics: do exactly one log poll, synchronously, and exit. No
         # server, no background thread -- "once" has to mean once.
+        #
+        # Nothing here opens a socket, so the bind and token checks below are
+        # deliberately skipped: `--once` must not fail because the antispam
+        # container is down, Docker cannot be queried, or the token file is
+        # unreadable, when all it was asked to do is read the smtp log.
         try:
             if not config.get("collector", "ingest_smtp_logs") or args.no_log_poll:
                 log.info("smtp log ingestion is disabled; nothing to poll")
@@ -551,11 +549,52 @@ def cmd_collect(args, config) -> int:
         finally:
             ingestor.close()
 
+    bind = config.get("collector", "bind")
+    port = config.get("collector", "port")
+    # Exposure first: if the port would be reachable from the wrong places,
+    # that is the graver problem, and the operator should hear about it rather
+    # than be sent off to generate a token and then told again.
+    try:
+        exposure = assess_bind(config)
+        if not exposure["safe"] and not args.allow_remote:
+            raise MailutError(
+                f"refusing to bind the collector to {bind}: {exposure['detail']}.\n"
+                "Use the loopback address, or the gateway of a Docker bridge "
+                "network the antispam container is attached to, so that only "
+                "containers on this host can reach it (see the Rspamd section of "
+                "docs/install.md), or pass --allow-remote if it is firewalled and "
+                "you accept the risk.\n"
+                "The shared token is required either way, but it does not make a "
+                "widely reachable bind address safe on its own."
+            )
+        token = read_token(config)  # fails loudly on a missing or unusable token
+    except MailutError:
+        ingestor.close()
+        raise
+    if exposure["category"] == "bridge-gateway":
+        log.info(
+            "collector bound to %s:%d (%s); make sure your firewall does not "
+            "forward that port", bind, port, exposure["detail"],
+        )
+    elif not exposure["safe"]:
+        log.warning(
+            "collector bound to %s:%d with --allow-remote: %s.", bind, port, exposure["detail"],
+        )
+    if token is None:
+        log.warning(
+            "allow_unauthenticated is set: any process that can reach %s:%d can "
+            "post fabricated audit evidence. See mailut.conf(5).", bind, port,
+        )
+    else:
+        log.info("ingestion requires the shared token from %s", config.token_file)
+
     try:
         server = _Server((bind, port), ingestor, config.get("collector", "max_body_bytes"), token)
     except OSError as exc:
         ingestor.close()
-        raise MailutError(f"cannot bind collector to {bind}:{port}: {exc}") from exc
+        raise MailutError(
+            f"cannot bind collector to {url_host(bind)}:{port}: {exc}"
+        ) from exc
 
     poller = None
     if config.get("collector", "ingest_smtp_logs") and not args.no_log_poll:
@@ -619,19 +658,35 @@ def cmd_ingest(args, config) -> int:
     return 0
 
 
+def local_host_for(bind: str) -> str:
+    """The address this host can reach a socket bound to ``bind`` on.
+
+    A wildcard bind answers on every address, so probe loopback of the right
+    family rather than the literal 0.0.0.0 or ::.
+    """
+    text = str(bind).strip()
+    if text in ("0.0.0.0", "*", ""):
+        return "127.0.0.1"
+    if text == "::":
+        return "::1"
+    return text
+
+
 def probe(config, *, timeout: float = 2.0) -> tuple[bool, str]:
     """Is a collector answering on the configured address?  (used by doctor)"""
     import urllib.error
     import urllib.request
 
     bind = config.get("collector", "bind")
-    host = "127.0.0.1" if bind in ("0.0.0.0", "::") else bind
-    url = f"http://{host}:{config.get('collector', 'port')}/health"
+    port = config.get("collector", "port")
+    host = local_host_for(bind)
+    where = f"{url_host(host)}:{port}"
+    url = f"http://{where}/health"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed localhost URL
             payload = json.loads(response.read().decode("utf-8", "replace"))
-        return True, f"responding at {host}:{config.get('collector', 'port')} ({payload.get('status')})"
+        return True, f"responding at {where} ({payload.get('status')})"
     except urllib.error.URLError as exc:
-        return False, f"no collector at {host}:{config.get('collector', 'port')} ({exc.reason})"
+        return False, f"no collector at {where} ({exc.reason})"
     except Exception as exc:  # pragma: no cover
         return False, f"collector probe failed: {exc}"

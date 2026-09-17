@@ -51,7 +51,8 @@ DEFAULTS: dict[str, dict[str, tuple[object, str]]] = {
         "log_poll_seconds": (30, "int"),
         "log_lookback": ("10m", "str"),
         "ingest_smtp_logs": (True, "bool"),
-        "token_file": ("", "str"),  # empty -> ingestion is unauthenticated
+        "token_file": ("", "str"),  # empty -> <confdir>/collector.token
+        "allow_unauthenticated": (False, "bool"),
     },
     "watch": {
         "window": ("15m", "str"),
@@ -158,6 +159,18 @@ class Config:
     @property
     def run_dir(self) -> Path:
         return Path(release.layout()["rundir"])
+
+    @property
+    def token_file(self) -> Path:
+        """Where the collector's shared ingestion token lives.
+
+        This has a default rather than meaning "no authentication" when empty:
+        a store of forensic evidence should not accept anonymous submissions
+        because nobody filled in a setting.  Opting out is a separate,
+        deliberate `allow_unauthenticated = true`.
+        """
+        value = self.get("collector", "token_file")
+        return Path(value) if value else Path(release.layout()["confdir"]) / "collector.token"
 
     @property
     def compose_argv(self) -> list[str]:

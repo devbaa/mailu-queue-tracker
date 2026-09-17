@@ -96,19 +96,31 @@ max_retention_days = 3650
 bind = 127.0.0.1
 port = 8765
 
-# Shared token required to submit audit evidence. Strongly recommended: without
-# it, any process that can reach the address above can post fabricated evidence
-# into the audit trail, which is exactly what the trail exists to rule out.
+# Shared token required to submit audit evidence. Ingestion is authenticated by
+# DEFAULT: the collector will not start without a token, because any process
+# that can reach the address above could otherwise post fabricated evidence
+# into the audit trail -- exactly what the trail exists to rule out.
 #
-#     umask 077 && openssl rand -hex 32 > /etc/mailut/collector.token
+# Create one with:
 #
-# Put the same value in the Rspamd exporter's `password` (Mailu Tools accepts
-# it as HTTP Basic, which is what metadata_exporter can send, or as a Bearer
-# token). The file must be mode 0600; mailut refuses to use one that other
-# accounts can read. /health stays unauthenticated so wiring can be checked.
+#     mailut audit token generate
+#
+# It writes a random token mode 0600 and prints the two lines to paste into the
+# Rspamd exporter rule. Mailu Tools accepts the token as HTTP Basic (what
+# metadata_exporter can send) or as a Bearer header. mailut refuses to use a
+# token file other accounts can read. /health stays unauthenticated so wiring
+# can be checked, but reports its counters only to authenticated callers.
 #
 # This is defence in depth, not a substitute for the bind rules above.
+#
+# Empty means /etc/mailut/collector.token.
 # token_file = /etc/mailut/collector.token
+
+# Accept evidence from anyone who can reach the collector. Off by default, and
+# turning it on is a deliberate choice to trust everything on that network:
+# `mailut doctor` warns for as long as it is set. Use it only where the
+# collector is genuinely isolated and you accept unattributed submissions.
+# allow_unauthenticated = false
 
 # Maximum accepted HTTP request body.
 max_body_bytes = 4194304

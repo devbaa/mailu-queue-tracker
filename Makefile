@@ -209,6 +209,10 @@ manifest:
 	  --layout rundir=$(RUNDIR)
 
 enable: ## Enable and start the collector, purge timer and watch timer
+	@# The collector requires a shared token, so make sure one exists before
+	@# starting it. --if-missing never disturbs a working installation, and the
+	@# generator is the application's own, so there is one implementation.
+	"$(DESTDIR)$(SBINDIR)/$(PACKAGE)" audit token generate --if-missing
 	systemctl enable --now mailut-audit.service
 	systemctl enable --now mailut-purge.timer
 	systemctl enable --now mailut-watch.timer

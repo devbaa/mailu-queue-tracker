@@ -194,6 +194,10 @@ class CollectorGuardTests(MailutTestCase):
         from mailut.util import MailutError
 
         args = _Args()
+        # The bind guard protects the HTTP listener, so it only applies when one
+        # will actually be opened. --once opens no socket and is checked in
+        # test_wiring.CollectOnceTests.
+        args.once = False
         with self.assertRaises(MailutError) as caught:
             collector.cmd_collect(args, Config.load(path))
         self.assertIn("refusing to bind", str(caught.exception))

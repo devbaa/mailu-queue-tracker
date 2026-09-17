@@ -107,8 +107,10 @@ To receive Rspamd decisions, copy the shipped exporter snippet into your Mailu
 overrides — `mailut` never edits Mailu configuration itself:
 
 ```bash
+sudo mailut audit token generate          # prints the lines to paste below
 sudo cp /usr/local/share/mailut/rspamd/mailut-exporter.conf \
         /opt/mailu/overrides/rspamd/
+sudo "$EDITOR" /opt/mailu/overrides/rspamd/mailut-exporter.conf
 cd /opt/mailu && sudo docker compose restart antispam
 mailut audit doctor
 ```
@@ -122,10 +124,12 @@ be your LAN, a `macvlan` gateway is usually the real upstream router, and an
 unrelated project's bridge is not reachable from Mailu at all. An address it
 cannot verify is refused, not assumed safe.
 
-Set `collector.token_file` as well, and put the same token in the exporter's
-`password`. The bind rules decide who can reach the collector; the token
-decides who may submit evidence, which is what stops another container on the
-same network forging audit records.
+Ingestion is authenticated by default: run `mailut audit token generate` and
+put the same token in the exporter's `password`. The bind rules decide who can
+reach the collector; the token decides who may submit evidence, which is what
+stops another container on the same network forging audit records. The
+collector refuses to start without one rather than accepting anonymous
+submissions — opting out takes an explicit `allow_unauthenticated = true`.
 
 `mailut audit doctor` checks every part of this: that an override in your Mailu
 tree posts to this collector's address, that the container can actually reach

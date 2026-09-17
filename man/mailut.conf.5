@@ -224,21 +224,33 @@ TCP port for the collector, 1\-65535. Default:
 .IR 8765 .
 .TP
 .B token_file
-Absolute path to a file holding a shared secret that a client must present to
-submit audit evidence. Strongly recommended. Without it, any process able to
-reach
+Absolute path to the file holding the shared secret a client must present to
+submit audit evidence. Empty means the default,
+.IR /etc/mailut/collector.token ,
+not "no authentication" \(em see
+.B allow_unauthenticated
+below. Without a token, any process able to reach
 .B bind
-can post fabricated records into the audit trail \(em precisely what that trail
+could post fabricated records into the audit trail, precisely what that trail
 exists to rule out. Restricting the bind address limits who can try; the token
 is what establishes that a submission came from Rspamd.
 .IP
-Generate one and keep it private:
+Create one with:
 .IP
 .nf
 .RS
-umask 077 && openssl rand -hex 32 > /etc/mailut/collector.token
+mailut audit token generate
 .RE
 .fi
+.IP
+which writes a random token mode 0600 and prints the lines to add to the
+exporter rule. It never replaces an existing token unless
+.B \-\-force
+is given, since that would stop Rspamd submitting until its
+.B password
+is updated to match.
+.B "mailut audit token show"
+prints the current value.
 .IP
 Put the same value in the exporter rule's
 .B password
@@ -266,9 +278,19 @@ everything. The
 endpoint stays unauthenticated so wiring can be checked, but it reports its
 counters only to authenticated callers.
 .IP
-Empty means ingestion is unauthenticated, which
+Default: empty, meaning
+.IR /etc/mailut/collector.token .
+.TP
+.B allow_unauthenticated
+Accept audit evidence from anyone who can reach the collector. Off by default:
+a missing token is a startup failure, not an open endpoint, so that an
+installation is never silently unauthenticated because a setting went unset.
+.IP
+Turning this on is a deliberate choice to trust everything that can reach
+.BR bind .
 .B mailut doctor
-reports as a warning. Default: empty.
+reports it as a warning for as long as it is set. Default:
+.IR false .
 .TP
 .B max_body_bytes
 Largest accepted HTTP request body. A larger request is refused with 413.
