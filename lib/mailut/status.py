@@ -91,7 +91,7 @@ def cmd_status(args, config) -> int:
         sys.stdout.write("\n")
         return 0
 
-    print(f"{release.PROJECT_NAME} {release.version_string()}")
+    print(f"{release.PROJECT_NAME} {release.version_display()}")
     print(f"  config:           {config.path}" + ("" if config.present else "  (not present; using defaults)"))
     print(f"  Mailu compose:    {mailu.compose_dir}" + ("" if mailu.compose_dir_ok() else "  (no compose file found)"))
     print(f"  database:         {info['path']}" + ("" if info["exists"] else "  (not created yet)"))

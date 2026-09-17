@@ -166,11 +166,17 @@ def version() -> str:
     return buildinfo()["version"]
 
 
-def version_string() -> str:
+def version_display() -> str:
+    """``1.0.0`` or ``1.0.0 (a1b2c3d)`` — the version without the command name."""
     info = buildinfo()
     if info["commit"]:
-        return f"{COMMAND_NAME} {info['version']} ({info['commit']})"
-    return f"{COMMAND_NAME} {info['version']}"
+        return f"{info['version']} ({info['commit']})"
+    return str(info["version"])
+
+
+def version_string() -> str:
+    """What `mailut version` prints: ``mailut 1.0.0 (a1b2c3d)``."""
+    return f"{COMMAND_NAME} {version_display()}"
 
 
 def layout() -> dict:

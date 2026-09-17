@@ -253,7 +253,15 @@ def _execute(plan: dict, config, manifest: Manifest) -> int:
     for path in deferred:
         errors += 0 if _unlink(path) else 1
 
-    # 4. Now-empty directories that belonged to the application.
+    # 4. Compiled bytecode caches. Python writes these into the library
+    #    directory as it runs; they are derived from application-owned files
+    #    inside directories this application owns exclusively.
+    for directory in plan["directories"]:
+        cache = Path(directory) / "__pycache__"
+        if cache.is_dir():
+            _remove_tree(cache)
+
+    # 5. Now-empty directories that belonged to the application.
     for directory in sorted(plan["directories"], key=len, reverse=True):
         path = Path(directory)
         if not path.is_dir():

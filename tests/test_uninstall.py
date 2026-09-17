@@ -95,12 +95,20 @@ class UninstallTests(unittest.TestCase):
         self.assertTrue((self.root / "etc/systemd/system").is_dir())
 
     # -- dry run ------------------------------------------------------------
+    def tree(self):
+        """Every path under the staging root, ignoring Python bytecode caches."""
+        return {
+            path
+            for path in self.root.rglob("*")
+            if "__pycache__" not in path.parts
+        }
+
     def test_dry_run_changes_nothing(self):
-        before = {path for path in self.root.rglob("*")}
+        before = self.tree()
         proc = self.uninstall("--dry-run")
         self.assertIn("Would remove", proc.stdout)
         self.assertIn("preserve", proc.stdout)
-        self.assertEqual({path for path in self.root.rglob("*")}, before)
+        self.assertEqual(self.tree(), before)
 
     def test_dry_run_lists_units_files_and_disposition(self):
         proc = self.uninstall("--dry-run")
@@ -207,6 +215,10 @@ class UninstallTests(unittest.TestCase):
         self.assertTrue((self.state / "mailut.sqlite3").exists())
 
     # -- manifest -----------------------------------------------------------
+    def test_bytecode_caches_are_cleaned_up(self):
+        self.uninstall("--yes")
+        self.assertEqual(list(self.root.rglob("__pycache__")), [])
+
     def test_uninstall_uses_the_manifest(self):
         extra = self.root / "usr/local/lib/mailut/mailut/not_in_manifest.py"
         extra.write_text("# added after installation\n", encoding="utf-8")

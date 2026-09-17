@@ -239,8 +239,11 @@ dist: ## Build dist/mailut-$(VERSION).tar.gz and dist/SHA256SUMS
 	  | tar -xf - -C dist/$(PACKAGE)-$(VERSION)
 	@$(MAKE) --no-print-directory schema-version > dist/$(PACKAGE)-$(VERSION)/SCHEMA_VERSION
 	@find dist/$(PACKAGE)-$(VERSION) -name '__pycache__' -type d -prune -exec rm -rf {} +
+	@# gzip -n omits the name and timestamp from the header, so the same
+	@# commit always produces the same bytes.
 	@tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2020-01-01' \
-	  -czf dist/$(PACKAGE)-$(VERSION).tar.gz -C dist $(PACKAGE)-$(VERSION)
+	  --mode='go-w' -cf - -C dist $(PACKAGE)-$(VERSION) \
+	  | gzip -9 -n > dist/$(PACKAGE)-$(VERSION).tar.gz
 	@rm -rf dist/$(PACKAGE)-$(VERSION)
 	@cd dist && sha256sum $(PACKAGE)-$(VERSION).tar.gz > SHA256SUMS
 	@echo "dist/$(PACKAGE)-$(VERSION).tar.gz"

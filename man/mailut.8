@@ -545,6 +545,14 @@ through the standard library HTTP client. Proxy credentials are never stored.
 .B MAILUT_ROOT
 Re-bases every installed path under one directory. A testing aid used by the
 test suite for staged installs; do not set it on a real system.
+.TP
+.B MAILUT_UPSTREAM_API
+Redirects release discovery. Honoured
+.B only
+when
+.B MAILUT_ROOT
+is also set, so it applies to a staged test installation and can never point a
+real installation's upgrade at a different upstream.
 .SH EXIT STATUS
 .TP
 .B 0

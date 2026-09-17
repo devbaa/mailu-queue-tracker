@@ -463,14 +463,22 @@ class UpgradeFlowTests(unittest.TestCase):
             self.assertTrue(lock.path.exists())
 
     # -- modified installed files ------------------------------------------
-    def test_modified_application_file_is_reported_before_replacement(self):
+    def test_modified_application_file_is_reported_and_confirmed(self):
         target = self.root / "usr/local/lib/mailut/mailut/util.py"
         target.write_text(target.read_text() + "\n# local edit\n", encoding="utf-8")
         self.publish("1.1.0")
-        proc = self.upgrade()
+
+        # Without a terminal and without --yes the upgrade stops rather than
+        # silently discarding a deliberate local change.
+        proc = self.upgrade(expect=3)
         self.assertIn("Modified installed application files detected.", proc.stdout)
         self.assertIn("util.py", proc.stdout)
+        self.assertIn(BASE_VERSION, self.installed_version())
+
+        proc = self.upgrade("--yes")
+        self.assertIn("Modified installed application files detected.", proc.stdout)
         self.assertIn("1.1.0", self.installed_version())
+        self.assertNotIn("# local edit", target.read_text(encoding="utf-8"))
 
     # -- systemd ------------------------------------------------------------
     def test_units_are_never_enabled_by_an_upgrade(self):

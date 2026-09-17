@@ -13,7 +13,6 @@ import sys
 from .events import ACTIONS, PRE_DATA_STAGES, STAGES
 from .util import (
     UsageError,
-    domain_of,
     normalize_domain,
     parse_since,
     parse_timepoint,
@@ -21,7 +20,6 @@ from .util import (
     to_iso,
     truncate,
     try_normalize_email,
-    utcnow,
 )
 
 BATCH = 500
@@ -142,7 +140,10 @@ def format_event(row, symbols, payloads=()) -> str:
         lines.append(f"  {label + ':':<10}{sanitize(value, fallback)}")
 
     field("stage", row["stage"])
-    field("from", row["envelope_from"], "<>")
+    # A null envelope sender is indistinguishable from one that was never
+    # recorded (a delivery line carries no sender), so do not print "<>" and
+    # imply a null-sender bounce that may not have happened.
+    field("from", row["envelope_from"], "unavailable")
     field("to", row["envelope_to"], "unavailable (no recipient reached)")
     if row["remote_ip"]:
         field("ip", row["remote_ip"])

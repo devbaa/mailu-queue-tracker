@@ -12,6 +12,24 @@ def load(name):
 
 
 class RspamdParseTests(MailutTestCase):
+    def test_timestamp_is_taken_from_the_payload(self):
+        import datetime
+
+        event = rspamd.parse(load("rspamd-accept.json"))[0]
+        self.assertEqual(
+            event.occurred_at,
+            datetime.datetime(2026, 9, 17, 12, 46, 9, tzinfo=datetime.timezone.utc),
+        )
+
+    def test_unix_timestamps_are_accepted_too(self):
+        import datetime
+
+        event = rspamd.parse({"rcpt": ["a@example.com"], "timestamp": 1789000000})[0]
+        self.assertEqual(
+            event.occurred_at,
+            datetime.datetime.fromtimestamp(1789000000, tz=datetime.timezone.utc),
+        )
+
     def test_accepted_message(self):
         events = rspamd.parse(load("rspamd-accept.json"))
         self.assertEqual(len(events), 1)

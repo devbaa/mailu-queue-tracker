@@ -266,7 +266,6 @@ def cmd_upgrade(args, config) -> int:
             schema_change = target_schema != current_schema and config.database.exists()
 
             audit_was_active = systemd.is_active("mailut-audit.service")
-            unit_states = {unit: systemd.show(unit) for unit in release.OWNED_UNITS}
 
             backup_path = None
             if schema_change:
@@ -300,18 +299,15 @@ def cmd_upgrade(args, config) -> int:
                 print("  Manual investigation is required.", file=sys.stderr)
                 return 1
 
+        # daemon-reload is enough for the timers and the oneshot services: it
+        # re-reads the unit files and re-arms the timers. Only the long-running
+        # collector has to be restarted to pick up new code, and only if it was
+        # running. Nothing is ever enabled here, so a unit the administrator
+        # deliberately left disabled stays disabled.
         systemd.daemon_reload()
-
-        # Restore exactly the run state we found: never enable what the
-        # administrator deliberately left disabled.
         if audit_was_active:
             print("Restarting mailut-audit.service...")
             systemd.restart("mailut-audit.service")
-        for unit, state in unit_states.items():
-            if unit == "mailut-audit.service":
-                continue
-            if state.get("ActiveState") == "active" and unit.endswith(".timer"):
-                systemd.restart(unit)
 
         failures = _verify(config, layout, target["version"], audit_was_active)
 

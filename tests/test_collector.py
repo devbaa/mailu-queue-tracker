@@ -181,6 +181,10 @@ class CollectorGuardTests(MailutTestCase):
     extra_config = "\n"
 
     def test_non_localhost_bind_is_refused_without_the_flag(self):
+        import logging
+
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
         path = self.tmp / "remote.conf"
         path.write_text(
             f"[storage]\nstate_dir = {self.state_dir}\n[collector]\nbind = 0.0.0.0\nport = 18999\n",
