@@ -543,8 +543,14 @@ Honoured by
 through the standard library HTTP client. Proxy credentials are never stored.
 .TP
 .B MAILUT_ROOT
-Re-bases every installed path under one directory. A testing aid used by the
-test suite for staged installs; do not set it on a real system.
+Re-bases every installed path under one directory, so the process cannot reach
+the real installation at all. Because nothing privileged is then in reach, the
+root requirement of
+.B upgrade
+and
+.B uninstall
+does not apply under it. A testing aid used by the test suite for staged
+installs; do not set it on a real system.
 .TP
 .B MAILUT_UPSTREAM_API
 Redirects release discovery. Honoured

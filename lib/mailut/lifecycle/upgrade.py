@@ -39,6 +39,14 @@ from .manifest import Manifest
 
 
 def _require_root() -> None:
+    """Fail early, before downloading anything, if we cannot install.
+
+    The check guards writes to /usr/local, /etc and /var. Under a staging root
+    every path is re-based into a throwaway tree, so there is nothing
+    privileged to protect and an unprivileged run is legitimate.
+    """
+    if release.staged_root():
+        return
     if os.geteuid() != 0:
         raise MailutError(
             f"{release.COMMAND_NAME} upgrade requires root privileges.\n"

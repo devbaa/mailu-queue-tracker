@@ -148,14 +148,19 @@ def buildinfo() -> dict:
     return info
 
 
-def _apply_env_overrides(layout: dict) -> dict:
-    """Allow the test suite to point the lifecycle commands at a staged root.
+def staged_root() -> str | None:
+    """The staging root this process addresses, or None for a real install.
 
-    ``MAILUT_ROOT`` re-bases every layout path.  It exists so the upgrade and
-    uninstall tests never touch the real filesystem; it is documented in
-    mailut(8) as a testing aid only.
+    ``MAILUT_ROOT`` re-bases *every* layout path, so a process running under it
+    cannot reach the real installation at all.  The test suite uses it to
+    exercise upgrade and uninstall without touching the filesystem; it is
+    documented in mailut(8) as a testing aid only.
     """
-    root = os.environ.get("MAILUT_ROOT")
+    return os.environ.get("MAILUT_ROOT") or None
+
+
+def _apply_env_overrides(layout: dict) -> dict:
+    root = staged_root()
     if not root:
         return layout
     base = Path(root)

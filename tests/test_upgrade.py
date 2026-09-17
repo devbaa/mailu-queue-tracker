@@ -488,10 +488,49 @@ class UpgradeFlowTests(unittest.TestCase):
         self.assertNotIn("enable --now", proc.stdout)
 
 
-@unittest.skipUnless(MAKE, "make is not available")
-class UpgradeRootTests(unittest.TestCase):
-    @unittest.skipIf(os.geteuid() == 0, "running as root; the check cannot fail")
-    def test_upgrade_requires_root(self):
+class PrivilegeCheckTests(unittest.TestCase):
+    """The root check must fire for a real install and only for a real one.
+
+    os.geteuid is patched so this behaves identically whoever runs the suite.
+    """
+
+    def setUp(self):
+        self._geteuid = os.geteuid
+        os.geteuid = lambda: 1000
+        self.addCleanup(setattr, os, "geteuid", self._geteuid)
+        os.environ.pop("MAILUT_ROOT", None)
+        self.addCleanup(os.environ.pop, "MAILUT_ROOT", None)
+
+    def test_upgrade_requires_root_on_a_real_installation(self):
         with self.assertRaises(MailutError) as caught:
             upgrade._require_root()
         self.assertIn("requires root", str(caught.exception))
+        self.assertIn("sudo", str(caught.exception))
+
+    def test_uninstall_requires_root_on_a_real_installation(self):
+        from mailut.lifecycle import uninstall
+
+        with self.assertRaises(MailutError) as caught:
+            uninstall._require_root(dry_run=False)
+        self.assertIn("requires root", str(caught.exception))
+
+    def test_uninstall_dry_run_never_requires_root(self):
+        from mailut.lifecycle import uninstall
+
+        uninstall._require_root(dry_run=True)
+
+    def test_a_staging_root_needs_no_privileges(self):
+        from mailut.lifecycle import uninstall
+
+        os.environ["MAILUT_ROOT"] = "/tmp/not-a-real-install"
+        upgrade._require_root()
+        uninstall._require_root(dry_run=False)
+
+    def test_upgrade_check_never_requires_root(self):
+        """--check is read-only, so it must work for an unprivileged operator."""
+        import inspect
+
+        source = inspect.getsource(upgrade.cmd_upgrade)
+        check_return = source.index("return cmd_check(args, config)")
+        require_root = source.index("_require_root()")
+        self.assertLess(check_return, require_root)

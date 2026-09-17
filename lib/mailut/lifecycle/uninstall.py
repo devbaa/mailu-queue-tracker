@@ -29,7 +29,8 @@ REMOVAL_ORDER = ("unit", "man", "program", "library", "data", "manifest")
 
 
 def _require_root(dry_run: bool) -> None:
-    if dry_run:
+    """A dry run changes nothing, and a staging root holds nothing privileged."""
+    if dry_run or release.staged_root():
         return
     if os.geteuid() != 0:
         raise MailutError(
