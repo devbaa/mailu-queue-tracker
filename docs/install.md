@@ -146,11 +146,22 @@ url = "http://172.17.0.1:8765/rspamd";
 
 That address is reachable by containers on this host and by nothing else, as
 long as your firewall does not forward the port — which matters, because the
-collector is unauthenticated. `mailut` refuses a wildcard (`0.0.0.0`) or a
-publicly routable bind unless you pass `--allow-remote` deliberately.
+collector is unauthenticated.
+
+`mailut` verifies this rather than guessing: it asks Docker for the gateway
+addresses of the networks on this host and accepts the bind only if it is one
+of them (or loopback). **A private address is not sufficient** — your LAN or
+VPC address is private too, and binding there would expose the collector to
+every machine on that network. Anything else, including an address Docker
+cannot be queried about, is refused unless you pass `--allow-remote`
+deliberately.
 
 If your Mailu network is not the default bridge, use that network's gateway
-address instead.
+address — any Docker gateway on the host is accepted:
+
+```bash
+docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Gateway}}{{end}}' $(docker network ls -q)
+```
 
 Then restart the container and verify:
 
@@ -166,11 +177,14 @@ antispam container can reach the collector; that no scope asks for a collection
 level the host disables; and the state of the units. It changes nothing and
 exits 4 if a critical check fails.
 
-The two Rspamd checks are the ones that catch a half-finished setup: `rspamd
-exporter` looks for a `metadata_exporter` in `<compose_dir>/overrides/rspamd/`
-pointing at your collector port, and `rspamd -> collector` runs an HTTP request
-*from inside the antispam container*. If the container has neither `curl` nor
-`wget`, that second check reports "not verified" rather than passing.
+The two Rspamd checks are the ones that catch a half-finished setup. `rspamd
+exporter` finds the `metadata_exporter` in `<compose_dir>/overrides/rspamd/`,
+reads the URL it actually posts to, and compares it with the collector's
+address and port — so an exporter aimed at the wrong host is reported, not
+accepted because it happens to mention the right port. `rspamd -> collector`
+then makes an HTTP request to **that same URL** from inside the antispam
+container. If the container has neither `curl` nor `wget`, the second check
+reports "not verified" rather than passing.
 
 ## Without systemd
 

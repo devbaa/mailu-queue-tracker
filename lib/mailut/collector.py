@@ -316,6 +316,55 @@ class LogPoller(threading.Thread):
             self.stop.wait(self.interval)
 
 
+def assess_bind(config, mailu=None) -> dict:
+    """Decide whether the configured bind address is safe to listen on.
+
+    The collector is unauthenticated, so the only question that matters is who
+    can reach it. Being in an RFC 1918 range does not answer that: a host's LAN
+    or VPC address is private and reachable from every other machine on that
+    network. What does answer it is whether the address is one Docker created
+    as a network gateway -- reachable by containers on this host, and by
+    nothing off it.
+
+    Returns ``{"category", "detail", "safe"}`` where category is one of
+    loopback, docker-gateway, unverified, wildcard or public.
+    """
+    bind = config.get("collector", "bind")
+    syntactic = classify_bind_address(bind)
+    if syntactic == "loopback":
+        return {"category": "loopback", "detail": f"{bind} is loopback", "safe": True}
+    if syntactic == "wildcard":
+        return {
+            "category": "wildcard",
+            "detail": f"{bind} listens on every interface",
+            "safe": False,
+        }
+
+    mailu = mailu or Mailu(config)
+    gateways, error = mailu.network_gateways()
+    if bind in gateways:
+        return {
+            "category": "docker-gateway",
+            "detail": f"{bind} is a Docker network gateway on this host",
+            "safe": True,
+        }
+    if error:
+        return {
+            "category": "unverified",
+            "detail": f"cannot confirm {bind} is a Docker gateway ({error})",
+            "safe": False,
+        }
+    known = ", ".join(sorted(gateways)) if gateways else "none found"
+    return {
+        "category": "public" if syntactic == "public" else "unverified",
+        "detail": (
+            f"{bind} is not a Docker network gateway on this host "
+            f"(gateways: {known}); it may be reachable from other machines"
+        ),
+        "safe": False,
+    }
+
+
 def cmd_collect(args, config) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -330,23 +379,25 @@ def cmd_collect(args, config) -> int:
 
     bind = config.get("collector", "bind")
     port = config.get("collector", "port")
-    exposure = classify_bind_address(bind)
-    if exposure in ("wildcard", "public", "unknown") and not args.allow_remote:
+    exposure = assess_bind(config)
+    if not exposure["safe"] and not args.allow_remote:
         raise MailutError(
             f"refusing to bind the collector to {bind}: it is unauthenticated and "
-            f"that address is {'reachable from other hosts' if exposure != 'unknown' else 'not a literal address we can classify'}.\n"
-            "Use the loopback address, or the Docker bridge gateway so only "
-            "containers on this host can reach it (see the Rspamd section of "
-            "docs/install.md), or pass --allow-remote if it is firewalled and "
-            "you accept the risk."
+            f"{exposure['detail']}.\n"
+            "Use the loopback address, or the gateway of the Docker network the "
+            "antispam container is on so that only containers on this host can "
+            "reach it (see the Rspamd section of docs/install.md), or pass "
+            "--allow-remote if it is firewalled and you accept the risk."
         )
-    if exposure == "private":
-        # The documented Linux setup: the antispam container reaches the host
-        # over the bridge gateway. Not loopback, but not exposed off the host.
+    if exposure["category"] == "docker-gateway":
         log.info(
-            "collector bound to %s, a host-local address reachable by containers "
-            "on this host; make sure your firewall does not expose port %d",
-            bind, port,
+            "collector bound to %s:%d (%s); make sure your firewall does not "
+            "forward that port", bind, port, exposure["detail"],
+        )
+    elif not exposure["safe"]:
+        log.warning(
+            "collector bound to %s:%d with --allow-remote: %s. The endpoint is "
+            "unauthenticated.", bind, port, exposure["detail"],
         )
 
     stop = threading.Event()

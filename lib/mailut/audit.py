@@ -100,16 +100,23 @@ def cmd_scopes(args, config, conn) -> int:
 
     if args.test:
         result = scope_store.describe_resolution(conn, args.test, local_domains=config.local_domains)
+        scope = result["scope"]
+        # Report what would actually be collected, not what the scope asked
+        # for: the host can disable a level after the scope was created, and
+        # this answer must agree with `mailut audit scopes`.
+        effective = _effective_level(scope["level"], config) if scope else None
+        if scope:
+            result["effective_level"] = effective
         if args.json:
             json.dump(result, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
             return 0
         if result["collected"]:
-            scope = result["scope"]
+            level = effective if effective == scope["level"] else f"{effective} (asked {scope['level']})"
             print(
                 f"{sanitize(args.test)}: collected via {scope['scope_type']} "
                 f"{sanitize(scope['scope_value'])} "
-                f"(level {scope['level']}, retention {scope['retention_days']}d)"
+                f"(level {level}, retention {scope['retention_days']}d)"
             )
         else:
             print(f"{sanitize(args.test)}: not collected")

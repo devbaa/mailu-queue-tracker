@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import collector as collector_mod
 from . import migrations, payloads as payload_store, release, systemd
@@ -228,12 +230,13 @@ def collect_checks(config) -> list[dict]:
         _check(results, "message collection", OK, "complete messages are disabled (default)")
 
     bind = config.get("collector", "bind")
+    exposure = collector_mod.assess_bind(config, mailu)
     _check(
         results,
         "collector bind",
-        OK if bind in ("127.0.0.1", "::1", "localhost") else WARN,
-        f"{bind}:{config.get('collector', 'port')}"
-        + ("" if bind in ("127.0.0.1", "::1", "localhost") else " (not localhost; the collector is unauthenticated)"),
+        OK if exposure["safe"] else WARN,
+        f"{bind}:{config.get('collector', 'port')} — {exposure['detail']}"
+        + ("" if exposure["safe"] else "; the collector is unauthenticated"),
     )
     running, note = collector_mod.probe(config)
     collector_unit_active = systemd.is_active("mailut-audit.service")
@@ -292,17 +295,32 @@ def _check_rspamd(results, config, mailu, docker) -> None:
     override_dir = mailu.rspamd_override_dir
     port = config.get("collector", "port")
     configured = None
+    exporter_url = None
     if override_dir.is_dir():
         for candidate in sorted(override_dir.glob("*.conf")):
             try:
                 text = candidate.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if "metadata_exporter" in text and f":{port}" in text:
-                configured = candidate
-                break
+            if "metadata_exporter" not in text:
+                continue
+            url = _exporter_url(text)
+            if url is None:
+                continue
+            configured, exporter_url = candidate, url
+            break
+
     if configured:
-        _check(results, "rspamd exporter", OK, f"{configured} posts to port {port}")
+        # Compare the exporter's real endpoint with ours. A file merely
+        # containing the port number proves nothing: it could post to a
+        # different host entirely.
+        endpoint = urlsplit(exporter_url)
+        mismatch = _endpoint_mismatch(endpoint, config)
+        if mismatch:
+            _check(results, "rspamd exporter", WARN,
+                   f"{configured} posts to {exporter_url}, but {mismatch}")
+        else:
+            _check(results, "rspamd exporter", OK, f"{configured} posts to {exporter_url}")
     elif override_dir.is_dir():
         _check(
             results,
@@ -326,9 +344,19 @@ def _check_rspamd(results, config, mailu, docker) -> None:
         _check(results, "rspamd -> collector", WARN,
                "skipped: docker or compose directory unavailable")
         return
-    bind = config.get("collector", "bind")
-    target = "127.0.0.1" if classify_bind_address(bind) == "loopback" else bind
-    url = f"http://{target}:{port}/health"
+
+    # Probe the endpoint the exporter is actually configured to post to, so a
+    # mismatch between the exporter and collector.bind cannot pass as healthy.
+    # Fall back to the configured bind only when no exporter was found.
+    if exporter_url:
+        endpoint = urlsplit(exporter_url)
+        host = endpoint.hostname or config.get("collector", "bind")
+        target_port = endpoint.port or port
+    else:
+        bind = config.get("collector", "bind")
+        host = "127.0.0.1" if classify_bind_address(bind) == "loopback" else bind
+        target_port = port
+    url = f"http://{host}:{target_port}/health"
     reachable, detail = mailu.probe_url_from_service(mailu.antispam_service, url)
     if reachable is True:
         _check(results, "rspamd -> collector", OK, f"{mailu.antispam_service} can reach {url}")
@@ -343,6 +371,46 @@ def _check_rspamd(results, config, mailu, docker) -> None:
         )
     else:
         _check(results, "rspamd -> collector", WARN, f"not verified: {detail}")
+
+
+_EXPORTER_URL_RE = re.compile(r"""\burl\s*=\s*["']?(https?://[^"'\s;]+)""")
+
+
+def _exporter_url(text: str) -> str | None:
+    """The URL a metadata_exporter block posts to, if one is declared."""
+    match = _EXPORTER_URL_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _endpoint_mismatch(endpoint, config) -> str | None:
+    """Explain why an exporter endpoint cannot reach this collector, if so.
+
+    A textual difference is not automatically wrong -- a wildcard bind answers
+    on every address, and a hostname may resolve to the right one -- so only
+    report what is genuinely inconsistent.
+    """
+    bind = config.get("collector", "bind")
+    port = config.get("collector", "port")
+    host = endpoint.hostname
+    target_port = endpoint.port or (443 if endpoint.scheme == "https" else 80)
+
+    if target_port != port:
+        return f"the collector listens on port {port}"
+    if classify_bind_address(bind) == "wildcard":
+        return None  # answers on every address
+    if host and host != bind:
+        # A hostname may still resolve to the bind address; the reachability
+        # probe below is the authority. Flag only literal-address conflicts.
+        try:
+            import ipaddress as _ip
+
+            _ip.ip_address(host)
+        except ValueError:
+            return None
+        if classify_bind_address(bind) == "loopback" and host in ("127.0.0.1", "::1"):
+            return None
+        return f"the collector is bound to {bind}"
+    return None
 
 
 def _check_degraded_scopes(results, config, database) -> None:

@@ -76,10 +76,12 @@ max_retention_days = 3650
 #
 #     bind = 172.17.0.1
 #
-# That address is reachable by containers on this host and by nothing else,
-# provided your firewall does not forward the port. A wildcard (0.0.0.0) or a
-# public address is refused unless `mailut audit collect --allow-remote` is
-# used deliberately.
+# mailut checks this against the gateway addresses Docker reports for the
+# networks on this host, and accepts only loopback or one of those gateways.
+# A private address is NOT sufficient on its own: a LAN or VPC address is
+# private too and would expose this unauthenticated port to that whole
+# network. Anything else is refused unless `mailut audit collect
+# --allow-remote` is used deliberately.
 bind = 127.0.0.1
 port = 8765
 

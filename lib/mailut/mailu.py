@@ -7,6 +7,7 @@ interpreted as a command.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shlex
@@ -21,6 +22,7 @@ ENV_QUEUE = "MAILUT_QUEUE_FILE"
 ENV_SMTP_LOG = "MAILUT_SMTP_LOG_FILE"
 ENV_FRONT_LOG = "MAILUT_FRONT_LOG_FILE"
 ENV_POSTSUPER_OUT = "MAILUT_POSTSUPER_OUT"
+ENV_DOCKER_GATEWAYS = "MAILUT_DOCKER_GATEWAYS"
 
 
 class Mailu:
@@ -36,6 +38,65 @@ class Mailu:
     def rspamd_override_dir(self):
         """Where Mailu expects Rspamd overrides to be dropped."""
         return self.compose_dir / "overrides" / "rspamd"
+
+    @property
+    def docker_argv(self) -> list[str]:
+        """The plain ``docker`` command, for subcommands Compose does not have."""
+        first = self.compose[0]
+        if Path(first).name == "docker":
+            return [first]
+        return ["docker"]
+
+    def network_gateways(self) -> tuple[set, str | None]:
+        """Gateway addresses of the Docker networks on this host.
+
+        These are the addresses Docker itself created as bridge gateways, so a
+        container can reach the host at one of them and nothing outside the host
+        can. That is a much narrower and more accurate test than "is it in an
+        RFC 1918 range" -- a host's LAN or VPC address is private too, and
+        binding an unauthenticated port to it exposes it to the whole network.
+
+        Returns ``(addresses, error)``; ``error`` is set when discovery could
+        not be performed, which is not the same as "no gateways exist".
+        """
+        fixture = os.environ.get(ENV_DOCKER_GATEWAYS)
+        if fixture is not None:
+            return {a.strip() for a in fixture.split(",") if a.strip()}, None
+        try:
+            listing = subprocess.run(
+                [*self.docker_argv, "network", "ls", "--quiet"],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return set(), f"cannot run docker: {exc}"
+        if listing.returncode != 0:
+            detail = (listing.stderr or "").strip().splitlines()
+            return set(), detail[-1] if detail else "docker network ls failed"
+        ids = listing.stdout.split()
+        if not ids:
+            return set(), None
+        try:
+            inspect = subprocess.run(
+                [*self.docker_argv, "network", "inspect", "--format",
+                 "{{range .IPAM.Config}}{{println .Gateway}}{{end}}", *ids],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return set(), f"cannot inspect docker networks: {exc}"
+        if inspect.returncode != 0:
+            detail = (inspect.stderr or "").strip().splitlines()
+            return set(), detail[-1] if detail else "docker network inspect failed"
+        gateways = set()
+        for line in inspect.stdout.split():
+            candidate = line.strip()
+            if not candidate:
+                continue
+            try:
+                ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            gateways.add(candidate)
+        return gateways, None
 
     # -- primitives ----------------------------------------------------------
     def available(self) -> bool:
