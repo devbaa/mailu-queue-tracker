@@ -6,10 +6,9 @@ import datetime as _dt
 import hashlib
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from . import payloads as payload_store
 from . import scopes as scope_store
+from .config import COLLECTABLE_LEVELS
 from .util import MailutError, domain_of, to_iso, try_normalize_email, utcnow
 
 # Stable machine-readable outcomes.  These are what gets stored and what
@@ -181,17 +180,12 @@ class EventStore:
         if event.action in ("accept", "deliver") and not self.config.get("audit", "store_accepted"):
             return {"status": "out_of_scope", "recipient": event.envelope_to, "reason": "accepted events disabled"}
 
-        # A scope cannot be *created* at a level the host forbids, but the host
-        # configuration can be tightened afterwards. Collect at the reduced
-        # level rather than dropping the evidence entirely -- and record the
-        # reduced level on the event, so `audit show` reports what was actually
-        # retained. `audit scopes` and `doctor` surface the discrepancy, so
-        # this never passes unnoticed.
-        level = scope.level
-        if level == "headers" and not self.config.get("audit", "allow_headers"):
-            level = "metadata"
-        if level == "message" and not self.config.get("audit", "allow_messages"):
-            level = "metadata"
+        # The level actually retained, recorded on the event so `audit show`
+        # reports what was kept.  No scope can be created above metadata (the
+        # logs carry no content), so anything else here is a scope from before
+        # that rule; it is collected as metadata and `audit scopes` and
+        # `doctor` both say so.
+        level = scope.level if scope.level in COLLECTABLE_LEVELS else "metadata"
 
         retention = scope.retention_days or self.config.get("audit", "default_retention_days")
         expires_at = self._expiry(event.occurred_at, retention)
@@ -270,7 +264,6 @@ class EventStore:
                     ),
                 )
 
-            stored_payloads = self._store_payloads(event, event_id, level, expires_at, now)
             self.conn.execute("COMMIT")
         except sqlite3.Error as exc:
             self.conn.execute("ROLLBACK")
@@ -285,76 +278,8 @@ class EventStore:
             "fingerprint": fingerprint,
             "level": level,
             "expires_at": expires_at,
-            "payloads": stored_payloads,
         }
 
-    def _store_payloads(self, event: Event, event_id: int, level: str, expires_at: str, now: str) -> list[str]:
-        stored: list[str] = []
-        if level == "metadata":
-            return stored  # metadata mode never keeps headers or a body
-
-        if event.headers_text and level in ("headers", "message"):
-            text = event.headers_text
-            self.conn.execute(
-                """
-                INSERT INTO audit_payloads (event_id, kind, content, stored_bytes,
-                                            original_bytes, sha256, created_at, expires_at)
-                VALUES (?, 'headers', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    text,
-                    len(text.encode("utf-8", "replace")),
-                    len(text.encode("utf-8", "replace")),
-                    hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(),
-                    now,
-                    expires_at,
-                ),
-            )
-            stored.append("headers")
-
-        if event.raw_message and level == "message":
-            limit = self.config.get("audit", "message_max_bytes")
-            if len(event.raw_message) > limit:
-                # Oversized messages are not silently truncated: the metadata
-                # is kept and the omission is recorded on the event.
-                self.conn.execute(
-                    "UPDATE audit_events SET reason = COALESCE(reason || ' | ', '') || ? WHERE id = ?",
-                    (f"message payload not stored: {len(event.raw_message)} bytes exceeds message_max_bytes={limit}", event_id),
-                )
-                return stored
-            scope_row = self.conn.execute(
-                "SELECT message_retention_days FROM audit_events e "
-                "LEFT JOIN audit_scopes s ON s.id = e.scope_id WHERE e.id = ?",
-                (event_id,),
-            ).fetchone()
-            days = (scope_row["message_retention_days"] if scope_row else None) or self.config.get(
-                "audit", "message_retention_days"
-            )
-            payload_expiry = self._expiry(event.occurred_at, days)
-            meta = payload_store.store_message(
-                Path(self.config.message_dir), event.occurred_at, event.raw_message
-            )
-            self.conn.execute(
-                """
-                INSERT INTO audit_payloads (event_id, kind, path, stored_bytes,
-                                            original_bytes, sha256, created_at, expires_at)
-                VALUES (?, 'message', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    meta["path"],
-                    meta["stored_bytes"],
-                    meta["original_bytes"],
-                    meta["sha256"],
-                    now,
-                    payload_expiry,
-                ),
-            )
-            stored.append("message")
-        return stored
-
-    # -- enrichment ----------------------------------------------------------
     def attach_message_id(self, queue_id: str, message_id: str) -> int:
         """Fill in a Message-ID learned later from postfix/cleanup.
 

@@ -301,12 +301,6 @@ def _execute(plan: dict, config, manifest: Manifest) -> int:
         print("Preserved:")
         for item in preserved:
             print(f"  {item}")
-    print()
-    print(
-        "Your Mailu/Rspamd configuration may still contain a metadata exporter\n"
-        "pointing to the Mailu Tools collector. Remove that configuration manually\n"
-        f"if it was not installed and owned by {release.COMMAND_NAME}."
-    )
     return 1 if errors else 0
 
 

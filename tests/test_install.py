@@ -112,11 +112,14 @@ class StagedInstallTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o640)
         self.assertEqual(stat.S_IMODE(self.path("etc/mailut").stat().st_mode), 0o750)
 
-    def test_example_config_and_rspamd_snippet_are_data(self):
+    def test_example_config_is_data(self):
         self.assertTrue(self.path("usr/local/share/mailut/mailut.conf.example").is_file())
-        snippet = self.path("usr/local/share/mailut/rspamd/mailut-exporter.conf")
-        self.assertTrue(snippet.is_file())
-        self.assertIn("metadata_exporter", snippet.read_text(encoding="utf-8"))
+
+    def test_nothing_is_installed_for_mailu_to_load(self):
+        """mailut reads Mailu's logs; it ships nothing Mailu or Rspamd must load."""
+        self.assertFalse(self.path("usr/local/share/mailut/rspamd").exists())
+        for path in self.root.rglob("*"):
+            self.assertNotIn("exporter", path.name)
 
     def test_no_old_command_names_are_installed(self):
         for path in self.root.rglob("*"):

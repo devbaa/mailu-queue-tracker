@@ -13,14 +13,13 @@ class ConfigTests(MailutTestCase):
         self.assertEqual(config.get("audit", "default_retention_days"), 30)
         self.assertEqual(config.get("audit", "default_level"), "metadata")
         self.assertTrue(config.get("audit", "store_accepted"))
-        self.assertTrue(config.get("audit", "allow_headers"))
-        self.assertFalse(config.get("audit", "allow_messages"))
-        self.assertEqual(config.get("collector", "bind"), "127.0.0.1")
-        self.assertEqual(config.get("collector", "port"), 8765)
+        self.assertEqual(config.get("collector", "log_poll_seconds"), 30)
+        self.assertTrue(config.get("collector", "ingest_smtp_logs"))
+        self.assertTrue(config.get("collector", "ingest_rspamd_logs"))
 
     def test_parses_types(self):
         config = self.config()
-        self.assertIsInstance(config.get("collector", "port"), int)
+        self.assertIsInstance(config.get("collector", "log_poll_seconds"), int)
         self.assertIsInstance(config.get("audit", "store_accepted"), bool)
         self.assertEqual(config.compose_argv, ["/bin/false"])
 
@@ -37,8 +36,8 @@ class ConfigTests(MailutTestCase):
 
     def test_inline_comment_is_stripped(self):
         path = self.tmp / "comment.conf"
-        path.write_text("[collector]\nport = 9999  # local only\n", encoding="utf-8")
-        self.assertEqual(Config.load(path).get("collector", "port"), 9999)
+        path.write_text("[collector]\nlog_poll_seconds = 45  # slower\n", encoding="utf-8")
+        self.assertEqual(Config.load(path).get("collector", "log_poll_seconds"), 45)
 
     def test_unknown_section_is_an_error(self):
         path = self.tmp / "bad.conf"
@@ -54,27 +53,27 @@ class ConfigTests(MailutTestCase):
 
     def test_non_integer_is_an_error(self):
         path = self.tmp / "bad.conf"
-        path.write_text("[collector]\nport = eight\n", encoding="utf-8")
+        path.write_text("[collector]\nlog_poll_seconds = eight\n", encoding="utf-8")
         with self.assertRaises(MailutError):
             Config.load(path)
 
-    def test_default_level_must_be_permitted(self):
+    def test_default_level_must_be_collectable(self):
         path = self.tmp / "bad.conf"
-        path.write_text("[audit]\ndefault_level = message\nallow_messages = false\n", encoding="utf-8")
+        path.write_text("[audit]\ndefault_level = message\n", encoding="utf-8")
         with self.assertRaises(MailutError):
             Config.load(path)
 
     def test_check_level_allowed(self):
         config = self.config()
         config.check_level_allowed("metadata")
-        config.check_level_allowed("headers")
-        with self.assertRaises(UsageError):
-            config.check_level_allowed("message")
+        for level in ("headers", "message"):
+            with self.assertRaises(UsageError):
+                config.check_level_allowed(level)
         with self.assertRaises(UsageError):
             config.check_level_allowed("everything")
 
-    def test_out_of_range_port(self):
+    def test_poll_interval_must_be_positive(self):
         path = self.tmp / "bad.conf"
-        path.write_text("[collector]\nport = 70000\n", encoding="utf-8")
+        path.write_text("[collector]\nlog_poll_seconds = 0\n", encoding="utf-8")
         with self.assertRaises(MailutError):
             Config.load(path)

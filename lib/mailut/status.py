@@ -7,31 +7,28 @@ changes state, and never touches Mailu's own configuration.
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
-import re
 import shutil
 import stat
 import sqlite3
 import sys
-from pathlib import Path
-from urllib.parse import urlsplit
 
 from . import collector as collector_mod
 from . import migrations, payloads as payload_store, release, systemd
 from . import scopes as scope_store
+from .config import COLLECTABLE_LEVELS
 from .db import Database, schema_version
+from .ingest import rspamd as rspamd_ingest
 from .mailu import Mailu
 from .util import (
     EXIT_CHECK_FAILED,
     MailutError,
-    classify_bind_address,
     human_bytes,
-    normalize_address,
-    same_address,
+    parse_duration,
     sanitize,
-    url_host,
+    to_iso,
+    utcnow,
 )
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -48,6 +45,7 @@ def _db_snapshot(config) -> dict:
         "scopes": None,
         "latest_event": None,
         "latest_purge": None,
+        "log_cursors": {},
         "error": None,
     }
     if not info["exists"]:
@@ -69,6 +67,13 @@ def _db_snapshot(config) -> dict:
             ).fetchone()
             if row:
                 info["latest_purge"] = {"finished_at": row["finished_at"], "events": row["events"]}
+            # How far the collector has read each log: the evidence that it is
+            # running and keeping up, without probing anything.
+            for source, spec in collector_mod.SOURCES.items():
+                row = conn.execute(
+                    "SELECT value FROM collector_state WHERE key = ?", (spec["cursor"],)
+                ).fetchone()
+                info["log_cursors"][source] = row["value"] if row else None
     except sqlite3.Error as exc:
         info["error"] = str(exc)
     finally:
@@ -78,7 +83,6 @@ def _db_snapshot(config) -> dict:
 
 def cmd_status(args, config) -> int:
     info = _db_snapshot(config)
-    collector_ok, collector_note = collector_mod.probe(config)
     units = systemd.owned_unit_states()
     mailu = Mailu(config)
 
@@ -92,9 +96,8 @@ def cmd_status(args, config) -> int:
         },
         "database": info,
         "message_storage_bytes": payload_store.storage_bytes(config.message_dir),
-        "collector": {"running": collector_ok, "detail": collector_note,
-                      "bind": config.get("collector", "bind"),
-                      "port": config.get("collector", "port")},
+        "collector": {"sources": collector_mod.enabled_sources(config),
+                      "log_cursors": info["log_cursors"]},
         "units": units,
     }
 
@@ -121,7 +124,9 @@ def cmd_status(args, config) -> int:
     if info["error"]:
         print(f"  database error:   {sanitize(info['error'])}")
     print(f"  message storage:  {human_bytes(payload['message_storage_bytes'])}")
-    print(f"  collector:        {collector_note}")
+    for source in collector_mod.enabled_sources(config):
+        cursor = info["log_cursors"].get(source)
+        print(f"  {source + ' log:':<18}" + (f"read up to {cursor}" if cursor else "not read yet"))
     print("  units:")
     for unit, state in units.items():
         print(f"    {unit:<24} {state}")
@@ -227,25 +232,6 @@ def collect_checks(config) -> list[dict]:
     else:
         _check(results, "message storage", OK, f"{config.message_dir} not created (no messages retained)")
 
-    if config.get("audit", "allow_messages"):
-        _check(results, "message collection", WARN,
-               "audit.allow_messages is true: complete messages may be retained")
-    else:
-        _check(results, "message collection", OK, "complete messages are disabled (default)")
-
-    bind = config.get("collector", "bind")
-    exposure = collector_mod.assess_bind(config, mailu)
-    _check(
-        results,
-        "collector bind",
-        OK if exposure["safe"] else WARN,
-        f"{bind}:{config.get('collector', 'port')} — {exposure['detail']}",
-    )
-    _check_collector_token(results, config)
-    running, note = collector_mod.probe(config)
-    collector_unit_active = systemd.is_active("mailut-audit.service")
-    _check(results, "collector", OK if running else (WARN if not collector_unit_active else FAIL), note)
-
     if systemd.available():
         for unit in release.OWNED_UNITS:
             state = systemd.show(unit)
@@ -288,202 +274,67 @@ def collect_checks(config) -> list[dict]:
 
 
 def _check_rspamd(results, config, mailu, docker) -> None:
-    """Check the Rspamd wiring itself, not merely that our example exists.
+    """Can mailut read Rspamd's per-message lines from this host's log?
 
-    The example snippet under <datadir> is installed by `make install` and is
-    always present, so its existence says nothing about whether this host is
-    actually exporting anything.  What matters is whether an override exists in
-    the Mailu tree that points at this collector, and whether the antispam
-    container can reach it.
+    This is the only wiring the antispam side needs, so it is checked
+    directly: read the recent antispam log and parse it the way the collector
+    will.  Recognising the lines here means the collector will recognise them;
+    seeing Rspamd's lines but failing to parse them means the log format on
+    this host differs from Rspamd's default, which is worth knowing before
+    relying on the audit trail.
     """
-    override_dir = mailu.rspamd_override_dir
-    port = config.get("collector", "port")
-    configured = None
-    exporter_url = None
-    exporter_text = ""
-    if override_dir.is_dir():
-        for candidate in sorted(override_dir.glob("*.conf")):
-            try:
-                text = candidate.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if "metadata_exporter" not in text:
-                continue
-            url = _exporter_url(text)
-            if url is None:
-                continue
-            configured, exporter_url, exporter_text = candidate, url, text
-            break
-
-    if configured:
-        # Compare the exporter's real endpoint with ours. A file merely
-        # containing the port number proves nothing: it could post to a
-        # different host entirely.
-        endpoint = urlsplit(exporter_url)
-        mismatch = _endpoint_mismatch(endpoint, config)
-        if mismatch:
-            _check(results, "rspamd exporter", WARN,
-                   f"{configured} posts to {exporter_url}, but {mismatch}")
-        else:
-            _check(results, "rspamd exporter", OK, f"{configured} posts to {exporter_url}")
-        _check_exporter_credentials(results, config, configured, exporter_text)
-    elif override_dir.is_dir():
-        _check(
-            results,
-            "rspamd exporter",
-            WARN,
-            f"no metadata_exporter targeting port {port} in {override_dir}; "
-            f"Rspamd decisions will not be collected (copy "
-            f"{Path(release.layout()['datadir']) / 'rspamd' / 'mailut-exporter.conf'} there)",
-        )
-    else:
-        _check(
-            results,
-            "rspamd exporter",
-            WARN,
-            f"{override_dir} does not exist; Rspamd decisions will not be collected",
-        )
-
-    # Reachability from the container is the other half, and the half that the
-    # bind address most often gets wrong.
+    if not config.get("collector", "ingest_rspamd_logs"):
+        _check(results, "rspamd log", OK, "disabled (collector.ingest_rspamd_logs = false)")
+        return
     if not (docker and mailu.compose_dir_ok()):
-        _check(results, "rspamd -> collector", WARN,
-               "skipped: docker or compose directory unavailable")
+        _check(results, "rspamd log", WARN, "skipped: docker or compose directory unavailable")
         return
-
-    # Probe the endpoint the exporter is actually configured to post to, so a
-    # mismatch between the exporter and collector.bind cannot pass as healthy.
-    # Fall back to the configured bind only when no exporter was found.
-    if exporter_url:
-        endpoint = urlsplit(exporter_url)
-        host = endpoint.hostname or config.get("collector", "bind")
-        target_port = endpoint.port or port
-    else:
-        bind = config.get("collector", "bind")
-        host = collector_mod.local_host_for(bind) if classify_bind_address(bind) == "loopback" else bind
-        target_port = port
-    # urlsplit strips the brackets from an IPv6 literal, so put them back.
-    url = f"http://{url_host(host)}:{target_port}/health"
-    reachable, detail = mailu.probe_url_from_service(mailu.antispam_service, url)
-    if reachable is True:
-        _check(results, "rspamd -> collector", OK, f"{mailu.antispam_service} can reach {url}")
-    elif reachable is False:
-        _check(
-            results,
-            "rspamd -> collector",
-            WARN,
-            f"{mailu.antispam_service} cannot reach {url} ({detail}); "
-            "the exporter's url and collector.bind must agree, and the bind "
-            "address must be reachable from the container",
-        )
-    else:
-        _check(results, "rspamd -> collector", WARN, f"not verified: {detail}")
-
-
-def _check_exporter_credentials(results, config, path, text: str) -> None:
-    """Will the exporter's credentials be accepted by the collector?
-
-    The reachability probe cannot answer this: ``/health`` is deliberately open,
-    so it succeeds even when the exporter's password is wrong and every real
-    posting is being rejected with 401.  Compare the two directly instead.
-
-    Neither the token nor the configured password is ever printed.
-    """
+    window = config.get("collector", "log_lookback")
     try:
-        token = collector_mod.read_token(config)
-    except MailutError:
-        return  # already reported by the collector token check
-    match = _EXPORTER_PASSWORD_RE.search(text)
-    password = match.group(1) if match else None
-    if token is None:
-        if password:
-            _check(results, "rspamd exporter auth", WARN,
-                   f"{path} sends a password but collector.token_file is not set; "
-                   "the collector accepts anything that reaches it")
-        return
-    if password is None:
-        _check(
-            results,
-            "rspamd exporter auth",
-            FAIL,
-            f"collector.token_file is set but {path} sends no credentials: every "
-            "export will be rejected with 401 and no Rspamd evidence will be "
-            'collected. Add `user = "mailut";` and `password = "<token>";` to the rule',
-        )
-        return
-    if not hmac.compare_digest(password, token):
-        _check(
-            results,
-            "rspamd exporter auth",
-            FAIL,
-            f"the password in {path} does not match collector.token_file; every "
-            "export will be rejected with 401",
-        )
-        return
-    _check(results, "rspamd exporter auth", OK, f"{path} sends the collector token")
-
-
-def _check_collector_token(results, config) -> None:
-    """Is ingestion authenticated, and is the secret stored safely?"""
-    if config.get("collector", "allow_unauthenticated"):
-        _check(
-            results,
-            "collector token",
-            WARN,
-            "collector.allow_unauthenticated is set: anything that can reach the "
-            "collector can post fabricated audit evidence. Remove that setting "
-            "and run `mailut audit token generate`",
-        )
-        return
-    try:
-        collector_mod.read_token(config)
+        since = to_iso(utcnow() - parse_duration(window))
+        text = mailu.logs(mailu.antispam_service, since=since, timeout=60)
     except MailutError as exc:
-        # The first line carries the problem; the rest is remediation, which
-        # doctor's one-line-per-check layout has no room for.
-        _check(results, "collector token", FAIL, str(exc).splitlines()[0])
+        _check(results, "rspamd log", WARN, f"cannot read the {mailu.antispam_service} log: {exc}")
         return
-    _check(results, "collector token", OK, f"ingestion requires the token in {config.token_file}")
 
-
-_EXPORTER_URL_RE = re.compile(r"""\burl\s*=\s*["']?(https?://[^"'\s;]+)""")
-_EXPORTER_PASSWORD_RE = re.compile(r"""\bpassword\s*=\s*["']?([^"'\s;]+)""")
-
-
-def _exporter_url(text: str) -> str | None:
-    """The URL a metadata_exporter block posts to, if one is declared."""
-    match = _EXPORTER_URL_RE.search(text)
-    return match.group(1) if match else None
-
-
-def _endpoint_mismatch(endpoint, config) -> str | None:
-    """Explain why an exporter endpoint cannot reach this collector, if so.
-
-    A textual difference is not automatically wrong -- a wildcard bind answers
-    on every address, and a hostname may resolve to the right one -- so only
-    report what is genuinely inconsistent.
-    """
-    bind = config.get("collector", "bind")
-    port = config.get("collector", "port")
-    host = endpoint.hostname
-    target_port = endpoint.port or (443 if endpoint.scheme == "https" else 80)
-
-    if target_port != port:
-        return f"the collector listens on port {port}"
-    if classify_bind_address(bind) == "wildcard":
-        return None  # answers on every address
-    if host and not same_address(host, bind) and host != bind:
-        # A hostname may still resolve to the bind address; the reachability
-        # probe below is the authority. Flag only literal-address conflicts.
-        if normalize_address(host) is None:
-            return None
-        if classify_bind_address(bind) == "loopback" and classify_bind_address(host) == "loopback":
-            return None
-        return f"the collector is bound to {bind}"
-    return None
+    candidates = parsed = 0
+    for line in text.splitlines():
+        if rspamd_ingest.MARKER not in line:
+            continue
+        candidates += 1
+        if rspamd_ingest.parse_line(line) is not None:
+            parsed += 1
+    if candidates == 0:
+        _check(
+            results,
+            "rspamd log",
+            WARN,
+            f"no per-message lines from Rspamd in the last {window}: either no "
+            f"mail was scanned, or Rspamd is not logging to the console",
+        )
+    elif parsed == 0:
+        _check(
+            results,
+            "rspamd log",
+            FAIL,
+            f"{candidates} per-message line(s) found but none in a recognised format; "
+            f"Rspamd's log_format on this host differs from the default, so no "
+            f"Rspamd decisions will be recorded",
+        )
+    elif parsed < candidates:
+        _check(
+            results,
+            "rspamd log",
+            WARN,
+            f"{parsed} of {candidates} per-message line(s) in the last {window} recognised",
+        )
+    else:
+        _check(results, "rspamd log", OK,
+               f"{parsed} per-message line(s) in the last {window}, all recognised")
 
 
 def _check_degraded_scopes(results, config, database) -> None:
-    """Warn when a scope asks for more than the host currently permits."""
+    """Warn when a scope asks for a level no source can supply."""
     if not config.database.exists():
         return
     try:
@@ -497,10 +348,8 @@ def _check_degraded_scopes(results, config, database) -> None:
         for scope in scope_store.list_scopes(conn):
             if not scope.included:
                 continue
-            if scope.level == "headers" and not config.get("audit", "allow_headers"):
-                degraded.append(f"{scope.scope_type} {scope.label()} (headers)")
-            elif scope.level == "message" and not config.get("audit", "allow_messages"):
-                degraded.append(f"{scope.scope_type} {scope.label()} (message)")
+            if scope.level not in COLLECTABLE_LEVELS:
+                degraded.append(f"{scope.scope_type} {scope.label()} ({scope.level})")
     except sqlite3.Error:
         return
     finally:
@@ -510,11 +359,11 @@ def _check_degraded_scopes(results, config, database) -> None:
             results,
             "scope levels",
             WARN,
-            f"{len(degraded)} scope(s) request a level this host disables and are "
-            f"collecting metadata only: {', '.join(sanitize(d) for d in degraded[:5])}",
+            f"{len(degraded)} scope(s) request a level the Mailu logs cannot supply and "
+            f"are collecting metadata only: {', '.join(sanitize(d) for d in degraded[:5])}",
         )
     else:
-        _check(results, "scope levels", OK, "every scope's level is permitted by this host")
+        _check(results, "scope levels", OK, "every scope collects metadata")
 
 
 def cmd_doctor(args, config) -> int:

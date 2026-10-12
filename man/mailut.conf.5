@@ -122,16 +122,18 @@ this affects future records only. Minimum 1. Default:
 Collection level used when
 .B mailut audit add
 is called without
-.BR \-\-level :
-.BR metadata ,
+.BR \-\-level .
+Only
+.B metadata
+is available:
+.B mailut
+collects from the Mailu container logs, which carry no message headers or
+bodies. Asking for
 .B headers
 or
-.BR message .
-It must be permitted by
-.B allow_headers
-/
-.B allow_messages
-below. Default:
+.B message
+is refused with that explanation rather than silently collecting less.
+Default:
 .IR metadata .
 .TP
 .B store_accepted
@@ -140,180 +142,63 @@ Turning this off makes it impossible to tell "this server never saw it" from
 "this server accepted it". Default:
 .IR true .
 .TP
-.B allow_headers
-Permit scopes to collect at level
-.BR headers .
-When false, a new scope may not ask for it: the request fails rather than being
-downgraded. A scope created while it was permitted keeps its recorded level but
-collects only metadata, which
-.B mailut audit scopes
-and
-.B mailut doctor
-both report. Default:
-.IR true .
-.TP
-.B allow_messages
-Permit scopes to collect at level
-.BR message ,
-retaining complete original messages. Off by default because it retains the
-contents of other people's mail. Default:
-.IR false .
-.TP
-.B message_retention_days
-Retention, in days, for stored raw messages when a scope does not override it
-with
-.BR \-\-message\-retention .
-May be shorter than the metadata retention, in which case the body is deleted
-while the metadata remains. Minimum 1. Default:
-.IR 30 .
-.TP
-.B message_max_bytes
-Largest message that will be stored. A larger one is not truncated: its
-metadata is kept and the omission is recorded in the event's reason. Minimum
-1024. Default:
-.I 26214400
-(25 MiB).
-.TP
 .B max_retention_days
 Upper bound accepted by
-.B \-\-retention
-and
-.BR \-\-message\-retention .
+.BR \-\-retention .
 Default:
 .I 3650
 (10 years).
 .SH SECTION [collector]
+.B mailut audit collect
+(run by
+.BR mailut\-audit.service )
+reads two Mailu container logs with
+.BR "docker compose logs" ,
+the same way an administrator would:
 .TP
-.B bind
-Address the audit collector listens on. This decides who can reach the
-ingestion endpoint, so it is checked rather than taken on trust.
-.IP
-A loopback address is the safest, but the Rspamd exporter runs inside the
-antispam container and cannot reach the host's loopback. For that case bind to
-the gateway of a Docker
-.B bridge
-network that the antispam container is attached to, such as
-.IR 172.17.0.1 .
-Whatever you choose must match the
-.B url
-in the exporter snippet.
-.IP
-.B mailut
-accepts only loopback or such a gateway, and the narrowness is deliberate. A
-private address is not sufficient, because a LAN or VPC address is private too
-and would expose the port to that entire network. A
-.B macvlan
-or
-.B ipvlan
-gateway is not accepted either: those drivers attach containers directly to the
-physical network, their gateway is normally the real upstream router, and
-Docker does not apply to them the packet filtering it applies to bridge
-networks. Nor is the gateway of an unrelated Docker project accepted \(em the
-antispam container cannot reach it, so nothing would ever arrive.
-.IP
-An address that cannot be verified is refused rather than assumed safe. A
-wildcard
-.RB ( 0.0.0.0 ", " :: )
-or a publicly routable address is likewise refused unless
-.B "mailut audit collect \-\-allow\-remote"
-is used deliberately. Default:
-.IR 127.0.0.1 .
+.B antispam
+Rspamd's line for every scanned message: its action, score and symbols, the
+envelope sender and recipients, the client address, the Message-ID and queue
+id.
 .TP
-.B port
-TCP port for the collector, 1\-65535. Default:
-.IR 8765 .
-.TP
-.B token_file
-Absolute path to the file holding the shared secret a client must present to
-submit audit evidence. Empty means the default,
-.IR /etc/mailut/collector.token ,
-not "no authentication" \(em see
-.B allow_unauthenticated
-below. Without a token, any process able to reach
-.B bind
-could post fabricated records into the audit trail, precisely what that trail
-exists to rule out. Restricting the bind address limits who can try; the token
-is what establishes that a submission came from Rspamd.
-.IP
-Create one with:
-.IP
-.nf
-.RS
-mailut audit token generate
-.RE
-.fi
-.IP
-which writes a random token mode 0600 and prints the lines to add to the
-exporter rule. It never replaces an existing token unless
-.B \-\-force
-is given, since that would stop Rspamd submitting until its
-.B password
-is updated to match.
-.B "mailut audit token show"
-prints the current value.
-.IP
-Put the same value in the exporter rule's
-.B password
-field.
-.B mailut
-accepts it as HTTP Basic credentials, which is the only scheme Rspamd's
-.B metadata_exporter
-can send \(em its http backend builds the header from the rule's
-.B user
-and
-.BR password ,
-with no way to set an arbitrary one \(em or as
-.BR "Authorization: Bearer <token>" ,
-which is more convenient for
-.BR curl (1).
-The username is not a secret.
-.IP
-The file must be at least 16 characters, contain no whitespace, and be
-unreadable by other accounts:
-.B mailut
-refuses a group- or world-readable token file rather than using it, and refuses
-to start if the file is missing or empty instead of falling back to accepting
-everything. The
-.I /health
-endpoint stays unauthenticated so wiring can be checked, but it reports its
-counters only to authenticated callers.
-.IP
-Default: empty, meaning
-.IR /etc/mailut/collector.token .
-.TP
-.B allow_unauthenticated
-Accept audit evidence from anyone who can reach the collector. Off by default:
-a missing token is a startup failure, not an open endpoint, so that an
-installation is never silently unauthenticated because a setting went unset.
-.IP
-Turning this on is a deliberate choice to trust everything that can reach
-.BR bind .
-.B mailut doctor
-reports it as a warning for as long as it is set. Default:
-.IR false .
-.TP
-.B max_body_bytes
-Largest accepted HTTP request body. A larger request is refused with 413.
-Minimum 4096. Default:
-.I 4194304
-(4 MiB).
+.B smtp
+What Rspamd never sees: Postfix rejections made before DATA, and local
+deliveries.
+.PP
+Nothing listens on the network, and no Mailu or Rspamd configuration has to
+change. Each log keeps its own cursor in the database, so a restart resumes
+where it stopped.
+.PP
+The antispam line is Rspamd's default
+.BR log_format ,
+which Mailu does not change. If it has been customised, those lines are not
+recognised;
+.B mailut audit doctor
+checks this against the live log. Rspamd also lists at most
+.B log_task_max_elts
+recipients per line (7 by default); a message to more is attributed only to
+those, and the event's reason says so. Its other recipients still appear in
+the smtp log.
 .TP
 .B log_poll_seconds
-How often the Mailu smtp container log is polled. One Docker call per poll,
-never one per event. Minimum 1. Default:
+How often each log is read. One Docker call per log per poll, never one per
+event. Minimum 1. Default:
 .IR 30 .
 .TP
 .B log_lookback
-How far back the log is read the first time, before a cursor exists. Accepts a
+How far back a log is read the first time, before it has a cursor. Accepts a
 duration such as
 .IR 10m ", " 2h ", " 1d .
 Default:
 .IR 10m .
 .TP
 .B ingest_smtp_logs
-Whether the collector polls the Postfix log at all. Set to false to collect
-Rspamd decisions only \(em at the cost of losing every pre-DATA and policy
-rejection, which Rspamd never sees. Default:
+Read the Postfix log. With this off, every rejection made before DATA is lost,
+because Rspamd never sees those. Default:
+.IR true .
+.TP
+.B ingest_rspamd_logs
+Read the Rspamd log. With this off, no Rspamd decision is recorded. Default:
 .IR true .
 .SH SECTION [watch]
 .B mailut watch
@@ -401,15 +286,11 @@ database = /var/lib/mailut/mailut.sqlite3
 default_retention_days = 30
 default_level = metadata
 store_accepted = true
-allow_headers = true
-allow_messages = false
-message_retention_days = 30
-message_max_bytes = 26214400
 
 [collector]
-bind = 127.0.0.1
-port = 8765
-token_file = /etc/mailut/collector.token
+log_poll_seconds = 30
+ingest_smtp_logs = true
+ingest_rspamd_logs = true
 .fi
 .SH FILES
 .TP
@@ -418,10 +299,5 @@ The configuration file.
 .TP
 .I /usr/local/share/mailut/mailut.conf.example
 The shipped example, with every setting at its default.
-.TP
-.I /etc/mailut/collector.token
-Suggested location for the
-.B token_file
-secret. Mode 0600.
 .SH SEE ALSO
 .BR mailut (8)

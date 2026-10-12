@@ -15,11 +15,11 @@ lib/mailut/
   migrations.py            schema, as an ordered, versioned list
   scopes.py                collection scopes and precedence
   events.py                the event model, classification, fingerprint, storage
-  payloads.py              gzipped message storage under the state directory
+  payloads.py              message storage (unused: no source supplies content)
   query.py                 audit show / stats
   purge.py                 audit purge
-  collector.py             the daemon: HTTP endpoint + log poller
-  ingest/rspamd.py         exporter payload -> events
+  collector.py             the daemon: polls the antispam and smtp logs
+  ingest/rspamd.py         Rspamd per-message log line -> events
   ingest/postfix.py        Postfix log line -> event or enrichment
   mailu.py                 docker compose / postqueue / postsuper, as argv
   queuecmd.py              queue list / drain / hold / release
@@ -37,45 +37,53 @@ and `mailut version` stay fast and do not touch SQLite.
 ## Data flow
 
 ```
-                     Rspamd (antispam container)
-                             │  metadata_exporter, JSON over HTTP
-                             ▼
-  Mailu smtp log  ──────► collector ──────► SQLite ──────► mailut audit show
-   (docker logs,          (HTTP +          (WAL,            mailut audit stats
-    polled with a         poller)          FK on)           mailut audit purge
-    stored cursor)            │
-                              └──────────► /var/lib/mailut/messages/  (optional)
+  Mailu antispam log ─┐
+   (Rspamd, one line   │   docker compose logs
+    per scanned msg)   ├──── --since <cursor> ───► collector ───► SQLite ───► mailut audit show
+  Mailu smtp log ──────┘   (one call per log         (poller)      (WAL,       mailut audit stats
+   (Postfix)                per interval)                           FK on)      mailut audit purge
 ```
 
 Two sources, because neither sees everything:
 
-- **Rspamd** sees scanned messages: score, action, symbols, authentication
-  results, subject, message id. It never sees a session Postfix refused before
-  `DATA`.
+- **Rspamd** sees scanned messages: action, score, symbols (and from them SPF,
+  DKIM and DMARC results), message id, queue id, client address. It never sees
+  a session Postfix refused before `DATA`.
 - **Postfix** sees the whole SMTP conversation: connection, HELO, MAIL FROM,
   RCPT TO rejections, policy rejections, and local delivery outcomes.
 
-Both produce the same `Event`, which is bound to a scope, given an expiry, and
-written through one code path (`events.EventStore.store`).
+Neither log carries the Subject, header addresses, headers or body, so none of
+those is recorded. Both sources produce the same `Event`, which is bound to a
+scope, given an expiry, and written through one code path
+(`events.EventStore.store`).
 
 ## The collector
 
-`mailut audit collect` (run by `mailut-audit.service`) is a foreground daemon:
+`mailut audit collect` (run by `mailut-audit.service`) is a foreground daemon
+with a single poller thread. Each interval it runs one
+`docker compose logs --since <cursor>` per log — one Docker call per log per
+poll, never one per event. Nothing listens on the network.
 
-- a `ThreadingHTTPServer` bound to `127.0.0.1` by default, accepting
-  `POST /rspamd` with a JSON object or a small array, with a body-size limit;
-- a poller thread that runs one `docker compose logs --since <cursor>` per
-  interval — one Docker call per poll, never one per event.
+Each log has its own cursor in `collector_state`, so a quiet or unavailable
+antispam container does not hold back the smtp log, or the other way round. A
+poll that fails (the container is not up yet, Docker is restarting) is logged
+and retried at the next interval; the daemon does not exit.
 
 All database writes go through a single connection behind one lock, which keeps
 the write path simple and avoids SQLite lock contention with itself.
 
-Restart safety comes from two independent mechanisms: the log cursor in
-`collector_state`, and the event fingerprint's uniqueness constraint. The poller
-deliberately re-reads one second of overlap; the fingerprint discards it.
+Restart safety comes from two independent mechanisms: the per-log cursor, and
+the event fingerprint's uniqueness constraint. The poller deliberately re-reads
+one second of overlap; the fingerprint discards it. The cursor records how far
+the log has been read: the moment the poll *started*, not the time of the last
+event. Taking it before the Docker call means a line written while Docker was
+answering is read again rather than skipped; not tying it to the last event
+means a quiet period does not re-read everything since the last mail.
 
-Unrecognised or malformed log lines are counted and skipped — the parser returns
-`None` rather than raising, because a daemon must not die on a log line.
+Unrecognised or malformed log lines are counted and skipped — the parsers return
+`None` rather than raising, because a daemon must not die on a log line. The
+Rspamd parser expects Rspamd's default `log_format`, taken from Rspamd's own
+source; `mailut doctor` checks the live log against it.
 
 ## Schema
 

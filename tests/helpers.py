@@ -30,14 +30,9 @@ state_dir = {state_dir}
 default_retention_days = 30
 default_level = metadata
 store_accepted = true
-allow_headers = true
-allow_messages = {allow_messages}
-message_retention_days = 30
-message_max_bytes = {message_max_bytes}
 
 [collector]
-bind = 127.0.0.1
-port = 18765
+log_poll_seconds = 30
 
 [watch]
 window = 15m
@@ -60,8 +55,6 @@ rcpt_domains_crit = 20
 class MailutTestCase(unittest.TestCase):
     """Base case giving each test its own state directory and config file."""
 
-    allow_messages = "false"
-    message_max_bytes = 26214400
     extra_config = ""
 
     def setUp(self):
@@ -76,8 +69,6 @@ class MailutTestCase(unittest.TestCase):
             DEFAULT_CONF.format(
                 compose_dir=self.compose_dir,
                 state_dir=self.state_dir,
-                allow_messages=self.allow_messages,
-                message_max_bytes=self.message_max_bytes,
             )
             + self.extra_config,
             encoding="utf-8",

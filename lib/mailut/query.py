@@ -126,10 +126,15 @@ def payload_kinds(conn, event_id: int) -> list[str]:
 
 
 def _unavailable(row) -> str:
-    """Say plainly why a field cannot exist, instead of inventing one."""
+    """Say plainly why there is no subject, instead of inventing one.
+
+    The two cases are different facts.  Before DATA the sender never
+    transmitted a subject, so none exists.  After DATA one existed, but the
+    Mailu logs that evidence is read from do not record it.
+    """
     if row["stage"] in PRE_DATA_STAGES:
         return "unavailable (rejected before DATA)"
-    return "unavailable"
+    return "not recorded (not in the Mailu logs)"
 
 
 def format_event(row, symbols, payloads=()) -> str:

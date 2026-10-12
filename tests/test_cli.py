@@ -7,6 +7,25 @@ from helpers import FIXTURES, MailutTestCase
 from mailut.util import EXIT_ABORTED, EXIT_FAILURE, EXIT_USAGE
 
 
+
+def antispam_lines(tmp, *markers, rcpts=None):
+    """Write the antispam fixture lines matching ``markers`` to a file.
+
+    ``rcpts`` replaces the recipient list of every line written, for tests that
+    need recipients in particular domains.
+    """
+    import re
+
+    lines = (FIXTURES / "antispam.log").read_text(encoding="utf-8").splitlines()
+    chosen = [line for line in lines if any(marker in line for marker in markers)]
+    assert chosen, markers
+    if rcpts is not None:
+        chosen = [re.sub(r"rcpts: <[^>]*>", f"rcpts: <{rcpts}>", line) for line in chosen]
+    path = tmp / ("antispam-" + "-".join(m.strip("@") for m in markers) + ".log")
+    path.write_text("\n".join(chosen) + "\n", encoding="utf-8")
+    return str(path)
+
+
 class HelpTests(MailutTestCase):
     def test_top_level_help(self):
         proc = self.run_cli("--help", expect=0)
@@ -45,7 +64,7 @@ class HelpTests(MailutTestCase):
 
     def test_documented_options_are_discoverable(self):
         proc = self.run_cli("audit", "add", "email", "--help", expect=0)
-        for option in ("--retention", "--level", "--message-retention"):
+        for option in ("--retention", "--level"):
             self.assertIn(option, proc.stdout)
 
     def test_version_forms_agree(self):
@@ -78,7 +97,7 @@ class ExitCodeTests(MailutTestCase):
     def test_usage_error_for_disabled_level(self):
         proc = self.run_cli("audit", "add", "domain", "example.com", "--level", "message",
                             expect=EXIT_USAGE)
-        self.assertIn("disabled on this host", proc.stderr)
+        self.assertIn("not available", proc.stderr)
         self.assertNotIn("Added", proc.stdout)
 
     def test_runtime_failure_for_a_broken_config(self):
@@ -90,7 +109,7 @@ class ExitCodeTests(MailutTestCase):
     def test_destructive_command_without_a_terminal_aborts(self):
         self.run_cli("audit", "add", "all", expect=0)
         self.run_cli("audit", "ingest", "rspamd", "--file",
-                     str(FIXTURES / "rspamd-accept.json"), expect=0)
+                     antispam_lines(self.tmp, "colour-1@"), expect=0)
         proc = self.run_cli("audit", "purge", "--all", expect=EXIT_ABORTED)
         self.assertIn("aborted", proc.stderr)
         # and nothing was deleted
@@ -140,16 +159,16 @@ class ScopeCliTests(MailutTestCase):
 class IngestCliTests(MailutTestCase):
     def test_end_to_end_rspamd_then_query(self):
         self.run_cli("audit", "add", "domain", "example.com", expect=0)
-        for name in ("rspamd-accept.json", "rspamd-greylist.json", "rspamd-spam.json"):
-            proc = self.run_cli("audit", "ingest", "rspamd", "--file", str(FIXTURES / name),
-                                expect=0)
+        for marker in ("colour-1@", "grey-1@", "spam-1@"):
+            proc = self.run_cli("audit", "ingest", "rspamd", "--file",
+                                antispam_lines(self.tmp, marker), expect=0)
             self.assertEqual(json.loads(proc.stdout)["stored"], 1)
 
         proc = self.run_cli("audit", "show", "--since", "400d", expect=0)
         self.assertIn("3 event(s)", proc.stdout)
-        self.assertIn("September invoice", proc.stdout)
+        self.assertIn("spam-1@example.net", proc.stdout)
 
-        proc = self.run_cli("audit", "show", "--symbol", "RBL_SPAMHAUS", "--since", "400d",
+        proc = self.run_cli("audit", "show", "--symbol", "RBL_SPAMHAUS_SBL", "--since", "400d",
                             "--json", expect=0)
         records = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(len(records), 1)
@@ -157,7 +176,7 @@ class IngestCliTests(MailutTestCase):
 
     def test_duplicate_ingestion_is_reported_not_duplicated(self):
         self.run_cli("audit", "add", "all", expect=0)
-        path = str(FIXTURES / "rspamd-accept.json")
+        path = antispam_lines(self.tmp, "colour-1@")
         self.run_cli("audit", "ingest", "rspamd", "--file", path, expect=0)
         proc = self.run_cli("audit", "ingest", "rspamd", "--file", path, expect=0)
         self.assertEqual(json.loads(proc.stdout)["duplicate"], 1)
@@ -180,7 +199,7 @@ class IngestCliTests(MailutTestCase):
 
     def test_out_of_scope_ingestion_stores_nothing(self):
         proc = self.run_cli("audit", "ingest", "rspamd", "--file",
-                            str(FIXTURES / "rspamd-accept.json"), expect=0)
+                            antispam_lines(self.tmp, "colour-1@"), expect=0)
         summary = json.loads(proc.stdout)
         self.assertEqual(summary["stored"], 0)
         self.assertEqual(summary["out_of_scope"], 1)
@@ -195,7 +214,8 @@ class IngestCliTests(MailutTestCase):
     def test_purge_dry_run_then_real(self):
         self.run_cli("audit", "add", "all", expect=0)
         self.run_cli("audit", "ingest", "rspamd", "--file",
-                     str(FIXTURES / "rspamd-spam.json"), expect=0)
+                     antispam_lines(self.tmp, "spam-1@", rcpts="user@example.com,user@example.org"),
+                     expect=0)
         proc = self.run_cli("audit", "purge", "--domain", "example.com", "--dry-run", expect=0)
         self.assertIn("events:            1", proc.stdout)
         self.assertIn("dry run", proc.stdout)
@@ -209,12 +229,12 @@ class IngestCliTests(MailutTestCase):
     def test_remove_scope_keeps_history(self):
         self.run_cli("audit", "add", "domain", "example.com", expect=0)
         self.run_cli("audit", "ingest", "rspamd", "--file",
-                     str(FIXTURES / "rspamd-accept.json"), expect=0)
+                     antispam_lines(self.tmp, "colour-1@"), expect=0)
         self.run_cli("audit", "remove", "domain", "example.com", expect=0)
         proc = self.run_cli("audit", "show", "--since", "400d", expect=0)
         self.assertIn("1 event(s)", proc.stdout)
         proc = self.run_cli("audit", "ingest", "rspamd", "--file",
-                            str(FIXTURES / "rspamd-greylist.json"), expect=0)
+                            antispam_lines(self.tmp, "grey-1@"), expect=0)
         self.assertEqual(json.loads(proc.stdout)["out_of_scope"], 1)
 
 

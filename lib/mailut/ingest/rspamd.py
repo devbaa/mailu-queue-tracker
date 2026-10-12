@@ -1,35 +1,77 @@
-"""Parse an Rspamd metadata-exporter payload into audit events.
+"""Parse Rspamd's per-message log line into audit events.
 
-The recommended exporter configuration is shipped in
-``<datadir>/rspamd/mailut-exporter.conf``; it posts one JSON object per scanned
-message to the local collector.  The parser deliberately accepts a range of
-key spellings so that a hand-rolled exporter, or a future Rspamd default
-formatter, keeps working.
+Rspamd writes one line per scanned message, from ``rspamd_task_write_log``.
+Mailu runs Rspamd with ``logging { type = console; }`` and the default
+``log_format``, so that line reaches ``docker compose logs antispam`` and looks
+like this (wrapped here; it is one line)::
 
-One scanned message can have several recipients.  Each recipient becomes its
-own event, because scope, retention and the answer to "what happened to mail
-for this customer?" are all per recipient.
+    2026-09-17 13:02:51 #42(normal) <8a3f2c>; task; rspamd_task_write_log:
+      id: <abc@example.net>, qid: <4AbCd67890>, ip: 203.0.113.4,
+      from: <sender@example.net>, (default: T (reject): [16.40/15.00]
+      [BAYES_SPAM(5.10){99.98%;},R_SPF_FAIL(1.00){-all;}]), len: 4096,
+      time: 120.5ms, dns req: 12, digest: <0123...>, rcpts: <user@example.com>,
+
+The default format, and how each field in it is rendered, is taken from the
+Rspamd source (``cfg_utils.cxx`` sets the format; ``task.c`` renders it).
+Reading the log means nothing has to listen on the network and nothing in
+Mailu's configuration has to change.
+
+What the line does not carry, and therefore what is never recorded from it: the
+Subject, header From/To, the message headers and the message body.
+
+Two properties of that format matter here:
+
+* Optional fields are only present when known (``qid``, ``ip``, ``user``,
+  ``from``, ``rcpts``), while ``id`` is always present and reads ``undef``
+  when the message had no Message-ID.
+* Rspamd truncates long lists at ``log_task_max_elts`` (7 by default) and
+  appends ``...``.  A message to more recipients than that names only the
+  first few in this line; the rest are still visible in the Postfix log.
+
+One scanned message can have several recipients.  Each becomes its own event,
+because scope, retention and "what happened to mail for this customer?" are
+all per recipient.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
 import datetime as _dt
+import re
 
 from ..events import Event, classify_rspamd
-from ..util import UTC, from_iso, utcnow
+from ..util import utcnow
+from .postfix import strip_prefixes
+
+# The function that writes the per-message line.  Everything before it is the
+# logger's prefix, whose shape depends on Rspamd's logging options (severity
+# tag, process type, systemd mode), so it is skipped rather than parsed.
+MARKER = "rspamd_task_write_log: "
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+_HEAD = re.compile(
+    r"^id: <(?P<mid>.*?)>,"
+    r"(?: qid: <(?P<qid>[^>]*)>,)?"
+    r"(?: ip: (?P<ip>[^,\s]*),)?"
+    r"(?: user: (?P<user>[^,]*),)?"
+    r"(?: from: <(?P<from>[^>]*)>,)?"
+    r"\s*$"
+)
+_RESULT = re.compile(
+    r"^\(default: (?P<spam>[TFS]) \((?P<action>[^)]*)\): "
+    r"\[(?P<score>[^/\]]*)/(?P<required>[^\]]*)\] \["
+)
+_LEN = re.compile(r"\blen: (?P<len>\d+)")
+_RCPTS = re.compile(r"\brcpts: <(?P<rcpts>[^>]*)>")
+_SYMBOL_NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+# Literal value Rspamd prints for a field it does not have.
+_UNDEF = "undef"
+_TRUNCATED = "..."
 
 
 class IngestError(ValueError):
-    """The payload could not be understood (the collector answers 400)."""
-
-
-def _first(data: dict, *keys, default=None):
-    for key in keys:
-        if key in data and data[key] not in (None, "", []):
-            return data[key]
-    return default
+    """An input record could not be understood."""
 
 
 def _as_float(value):
@@ -39,179 +81,193 @@ def _as_float(value):
         return None
 
 
-def _as_int(value):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+def _known(value):
+    """None for an absent field or Rspamd's ``undef`` placeholder."""
+    if value is None:
         return None
+    value = value.strip()
+    return None if value in ("", _UNDEF) else value
 
 
-def _timestamp(data: dict) -> _dt.datetime:
-    raw = _first(data, "occurred_at", "timestamp", "time", "unix_time", "scan_time")
-    if raw is None:
-        return utcnow()
-    if isinstance(raw, (int, float)):
-        try:
-            return _dt.datetime.fromtimestamp(float(raw), tz=UTC).replace(microsecond=0)
-        except (OverflowError, OSError, ValueError):
-            return utcnow()
-    try:
-        return from_iso(str(raw))
-    except Exception:
-        return utcnow()
+def _options_end(text: str, start: int) -> int:
+    """Index of the ``}`` closing the option block that opens at ``start``.
+
+    Each option is written as ``value;`` and the block as ``{...}``, so the
+    closing brace is one that follows a ``;`` (or opens-and-closes an empty
+    block) and is itself followed by ``,`` or the end.  That tolerates braces
+    and commas inside option values, which are free text such as URLs.
+    """
+    n = len(text)
+    p = start + 1
+    while p < n:
+        if text[p] == "}" and (p == start + 1 or text[p - 1] == ";") and (p + 1 == n or text[p + 1] == ","):
+            return p
+        p += 1
+    return n - 1
 
 
-def _recipients(data: dict) -> list[str]:
-    raw = _first(data, "rcpt", "recipients", "rcpt_smtp", "envelope_to", "to", default=[])
-    if isinstance(raw, str):
-        items = [part.strip() for part in raw.replace(";", ",").split(",")]
-    elif isinstance(raw, (list, tuple)):
-        items = []
-        for entry in raw:
-            if isinstance(entry, dict):
-                value = entry.get("addr") or entry.get("address") or entry.get("user")
-                if value:
-                    items.append(str(value))
-            elif entry:
-                items.append(str(entry))
-    else:
-        items = []
-    return [item for item in (i.strip() for i in items) if item]
+def parse_symbols(text: str) -> list[dict]:
+    """Parse ``NAME(score){opt;opt;},NAME(score){}`` into symbol dicts.
 
-
-def _sender(data: dict) -> str | None:
-    raw = _first(data, "from", "sender", "envelope_from", "from_smtp")
-    if isinstance(raw, (list, tuple)):
-        raw = raw[0] if raw else None
-    if isinstance(raw, dict):
-        raw = raw.get("addr") or raw.get("address")
-    return str(raw) if raw else None
-
-
-def _symbols(data: dict) -> list[dict]:
-    raw = _first(data, "symbols", default=None)
+    Never raises: whatever can be read before something unexpected is returned.
+    """
     out: list[dict] = []
-    if isinstance(raw, dict):
-        for name, entry in raw.items():
-            if isinstance(entry, dict):
-                out.append(
-                    {
-                        "symbol": entry.get("name") or name,
-                        "score": entry.get("score"),
-                        "options": entry.get("options"),
-                    }
-                )
-            else:
-                out.append({"symbol": name, "score": _as_float(entry), "options": None})
-    elif isinstance(raw, (list, tuple)):
-        for entry in raw:
-            if isinstance(entry, dict):
-                out.append(
-                    {
-                        "symbol": entry.get("symbol") or entry.get("name"),
-                        "score": entry.get("score"),
-                        "options": entry.get("options"),
-                    }
-                )
-            elif entry:
-                out.append({"symbol": str(entry), "score": None, "options": None})
-    return [s for s in out if s.get("symbol")]
+    i, n = 0, len(text)
+    while i < n:
+        paren = text.find("(", i)
+        if paren < 0:
+            break
+        name = text[i:paren].strip()
+        if not _SYMBOL_NAME.match(name):
+            break
+        close = text.find(")", paren)
+        if close < 0:
+            break
+        score = _as_float(text[paren + 1:close])
+        i = close + 1
+        options = None
+        if i < n and text[i] == "{":
+            end = _options_end(text, i)
+            values = [value for value in text[i + 1:end].split(";") if value]
+            options = ",".join(values) if values else None
+            i = end + 1
+        if i < n and text[i] == ",":
+            i += 1
+        out.append({"symbol": name, "score": score, "options": options})
+    return out
 
 
-def _auth_result(data: dict, name: str) -> str | None:
-    """Pull an SPF/DKIM/DMARC result from an explicit key or from symbols."""
-    explicit = _first(data, name, name.upper(), f"{name}_result")
-    if explicit:
-        return str(explicit).lower()
-    symbol_names = {str(s.get("symbol") or "").upper() for s in _symbols(data)}
-    prefix = {"spf": "R_SPF_", "dkim": "R_DKIM_", "dmarc": "DMARC_"}[name]
-    mapping = {
-        f"{prefix}ALLOW": "pass",
-        f"{prefix}REJECT": "fail",
-        f"{prefix}SOFTFAIL": "softfail",
-        f"{prefix}NEUTRAL": "neutral",
-        f"{prefix}NA": "none",
-        f"{prefix}PERMFAIL": "permerror",
-        f"{prefix}TEMPFAIL": "temperror",
-        "DMARC_POLICY_ALLOW": "pass",
-        "DMARC_POLICY_REJECT": "fail",
-        "DMARC_POLICY_QUARANTINE": "quarantine",
-        "DMARC_POLICY_SOFTFAIL": "softfail",
-        "DMARC_NA": "none",
-    }
-    for symbol, result in mapping.items():
-        if name == "dmarc" and not symbol.startswith("DMARC"):
-            continue
-        if symbol in symbol_names:
+# Symbol names as Rspamd's own plugins define them (spf.lua, dkim_check.c,
+# dmarc.lua).  The two mechanisms do not name failure the same way: SPF says
+# FAIL, DKIM says REJECT.
+_AUTH_SYMBOLS = {
+    "spf": (
+        ("R_SPF_ALLOW", "pass"),
+        ("R_SPF_FAIL", "fail"),
+        ("R_SPF_SOFTFAIL", "softfail"),
+        ("R_SPF_NEUTRAL", "neutral"),
+        ("R_SPF_NA", "none"),
+        ("R_SPF_PERMFAIL", "permerror"),
+        ("R_SPF_DNSFAIL", "temperror"),
+    ),
+    "dkim": (
+        ("R_DKIM_ALLOW", "pass"),
+        ("R_DKIM_REJECT", "fail"),
+        ("R_DKIM_NA", "none"),
+        ("R_DKIM_PERMFAIL", "permerror"),
+        ("R_DKIM_TEMPFAIL", "temperror"),
+    ),
+    "dmarc": (
+        ("DMARC_POLICY_ALLOW", "pass"),
+        ("DMARC_POLICY_REJECT", "fail"),
+        ("DMARC_POLICY_QUARANTINE", "quarantine"),
+        ("DMARC_POLICY_SOFTFAIL", "softfail"),
+        ("DMARC_NA", "none"),
+        ("DMARC_BAD_POLICY", "permerror"),
+        ("DMARC_DNSFAIL", "temperror"),
+    ),
+}
+
+
+def _auth_result(symbols: list[dict], name: str) -> str | None:
+    """SPF/DKIM/DMARC result, inferred from the symbols Rspamd fired."""
+    names = {str(s.get("symbol") or "").upper() for s in symbols}
+    for symbol, result in _AUTH_SYMBOLS[name]:
+        if symbol in names:
             return result
     return None
 
 
-def _decode_message(data: dict, limit: int) -> bytes | None:
-    raw = _first(data, "message_b64", "message_base64", "raw_b64")
-    if raw:
-        try:
-            decoded = base64.b64decode(str(raw), validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise IngestError(f"message_b64 is not valid base64: {exc}") from exc
-        return decoded[: limit + 1]
-    raw = _first(data, "message", "raw_message")
-    if raw:
-        return str(raw).encode("utf-8", "replace")[: limit + 1]
-    return None
+def parse_line(line: str, *, now: _dt.datetime | None = None) -> list[Event] | None:
+    """Parse one antispam log line.
+
+    Returns ``None`` when the line is not Rspamd's per-message line (most lines
+    are not), ``[]`` when it is but carries nothing to audit (authenticated
+    submission, or no recipient), and otherwise one event per recipient.
+    Never raises.
+    """
+    try:
+        return _parse_line(line, now=now)
+    except Exception:  # pragma: no cover - belt and braces for the daemon
+        return None
 
 
-def parse(data, *, message_limit: int = 26214400) -> list[Event]:
-    """Turn one exporter payload into one event per recipient."""
-    if not isinstance(data, dict):
-        raise IngestError("expected a JSON object")
+def _parse_line(line: str, *, now: _dt.datetime | None = None) -> list[Event] | None:
+    if not line or MARKER not in line:
+        return None
+    line = _ANSI.sub("", line)
+    when, _rest = strip_prefixes(line, now=now)
+    body = line[line.index(MARKER) + len(MARKER):].rstrip()
 
-    action = _first(data, "action", "rspamd_action")
-    symbols = _symbols(data)
-    occurred_at = _timestamp(data)
-    sender = _sender(data)
-    recipients = _recipients(data) or [None]
+    split = body.find(" (default: ")
+    if split < 0:
+        return None
+    head = _HEAD.match(body[:split])
+    result_text = body[split + 1:]
+    result = _RESULT.match(result_text)
+    if not head or not result:
+        return None
 
-    headers_text = _first(data, "headers", "header_text")
-    if isinstance(headers_text, dict):
-        headers_text = "\n".join(f"{k}: {v}" for k, v in headers_text.items())
-    raw_message = _decode_message(data, message_limit)
+    # The symbol list is free text and can contain anything, so find its end
+    # from the right: nothing after it (lengths, timings, addresses) can
+    # contain "]), len: ".
+    symbols_end = result_text.rfind("]), len: ")
+    if symbols_end < result.end():
+        return None
+    symbols = parse_symbols(result_text[result.end():symbols_end])
+    tail = result_text[symbols_end + 3:]
 
-    stage = str(_first(data, "stage", default="data") or "data").lower()
+    # Authenticated submission is a local account sending outwards, which is
+    # not inbound evidence; the Postfix side skips it the same way.
+    if _known(head.group("user")):
+        return []
+
+    recipients: list[str] = []
+    truncated = False
+    found = _RCPTS.search(tail)
+    if found:
+        for part in found.group("rcpts").split(","):
+            part = part.strip()
+            if part == _TRUNCATED or part.endswith(_TRUNCATED):
+                truncated = True
+                part = part[: -len(_TRUNCATED)].strip()
+            if part:
+                recipients.append(part)
+    if not recipients:
+        return []
+
+    action = result.group("action").strip()
     classified = classify_rspamd(action, symbols)
+    size = _LEN.search(tail)
+
+    reasons = []
+    if classified == "greylist":
+        reasons.append("greylisting")
+    if truncated:
+        reasons.append("Rspamd's log listed only the first recipients; the rest are not attributed here")
+    reason = "; ".join(reasons) or None
 
     events: list[Event] = []
     for recipient in recipients:
         event = Event(
-            occurred_at=occurred_at,
+            occurred_at=when or now or utcnow(),
             source="rspamd",
-            stage=stage,
+            stage="data",  # Rspamd scans the message after DATA, as a milter
             action=classified,
-            envelope_from=sender,
+            envelope_from=_known(head.group("from")),
             envelope_to=recipient,
-            header_from=_first(data, "header_from", "from_header"),
-            header_to=_first(data, "header_to", "to_header"),
-            subject=_first(data, "subject"),
-            message_id=_first(data, "message_id", "message-id", "msg_id"),
-            queue_id=_first(data, "qid", "queue_id"),
-            session_id=_first(data, "session_id", "session", "rspamd_session"),
-            remote_ip=_first(data, "ip", "remote_ip", "client_ip"),
-            helo=_first(data, "helo", "hostname"),
-            smtp_code=_first(data, "smtp_code"),
-            smtp_enhanced_code=_first(data, "smtp_enhanced_code", "dsn"),
-            reason=_first(data, "reason", "message_reason", "subject_reason"),
-            rspamd_score=_as_float(_first(data, "score", "rspamd_score")),
-            rspamd_required=_as_float(_first(data, "required_score", "required", "rspamd_required_score")),
-            rspamd_action=str(action).lower() if action else None,
-            spf=_auth_result(data, "spf"),
-            dkim=_auth_result(data, "dkim"),
-            dmarc=_auth_result(data, "dmarc"),
-            message_size=_as_int(_first(data, "size", "message_size", "len")),
+            message_id=_known(head.group("mid")),
+            queue_id=_known(head.group("qid")),
+            remote_ip=_known(head.group("ip")),
+            reason=reason,
+            rspamd_score=_as_float(result.group("score")),
+            rspamd_required=_as_float(result.group("required")),
+            rspamd_action=action.lower() or None,
+            spf=_auth_result(symbols, "spf"),
+            dkim=_auth_result(symbols, "dkim"),
+            dmarc=_auth_result(symbols, "dmarc"),
+            message_size=int(size.group("len")) if size else None,
             symbols=symbols,
-            headers_text=str(headers_text) if headers_text else None,
-            raw_message=raw_message,
         )
-        if event.action == "greylist" and not event.reason:
-            event.reason = "greylisting"
         events.append(event.normalize())
     return events

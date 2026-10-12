@@ -111,7 +111,7 @@ stage        connect | helo | mail | rcpt | data | queue | delivery | unknown
 action       accept | deliver | junk | greylist | soft_reject | reject |
              discard | policy_reject | virus_reject | unknown
 envelope_from, envelope_to (+ their domains)
-header_from, header_to, subject, message_id
+message_id
 queue_id, session_id
 remote_ip, helo
 smtp_code, smtp_enhanced_code, reason
@@ -122,6 +122,10 @@ message_size
 
 plus every Rspamd symbol in a normalised table (`symbol`, `score`, `options`),
 so you can ask "which mail did Spamhaus hit this month?".
+
+The Subject and the header From/To are **not** in that list: the Mailu logs do
+not record them, so they are never collected. (The schema keeps the columns,
+which simply stay empty.)
 
 **Accepted mail is collected too** (`store_accepted = true`). Without it you
 could not tell "this server never saw it" from "this server accepted it", which
@@ -146,43 +150,31 @@ several rows:
 Nothing correlates them into a single verdict, because in general they cannot be
 correlated with certainty. What is shown is what was observed.
 
-## Collection levels
+## Collection level
 
-| Level | Stores |
-| --- | --- |
-| `metadata` (default) | everything listed above — no body, no attachments, no complete message, no arbitrary raw headers |
-| `headers` | additionally the complete RFC822 header section |
-| `message` | additionally the complete original message |
+Everything recorded is **metadata**: the fields listed above, and no body, no
+attachments, no complete message and no header set. That is not a setting;
+it is what the sources contain. `mailut` reads the Mailu container logs, and
+neither Rspamd's per-message line nor Postfix's log carries message content.
 
-`message` is **globally disabled by default**:
-
-```ini
-[audit]
-allow_headers = true
-allow_messages = false
-```
-
-A scope may not ask for a level the host forbids — the command fails, it is
-never silently downgraded:
+The database can still represent the `headers` and `message` levels, but no
+scope can be created at them, and asking says why rather than quietly
+collecting less:
 
 ```bash
-$ mailut audit add domain example.com --level message
-mailut: collection level 'message' is disabled on this host
-(set audit.allow_messages = true in the configuration file)
+$ mailut audit add domain example.com --level headers
+mailut: collection level 'headers' is not available: mailut collects from the
+Mailu container logs, which carry no message headers or bodies; only 'metadata'
+can be collected
 $ echo $?
 2
 ```
 
-Per-scope overrides:
+Per-scope retention still applies:
 
 ```bash
-mailut audit add domain customer.example --retention 365 --level headers
-mailut audit add email legal@example.com --retention 365 --level message \
-                                         --message-retention 30
+mailut audit add domain customer.example --retention 365
 ```
-
-Headers and complete messages only exist if the Rspamd exporter sends them; the
-shipped snippet has both lines present and commented out.
 
 ## Retention
 
@@ -195,32 +187,7 @@ the retention in force at that moment. Consequences:
 - there is no command that rewrites historical expiry — if that is ever needed,
   it will be an explicit one.
 
-Raw-message retention may be shorter than metadata retention. When it elapses,
-the stored body is deleted and the metadata stays.
-
 Default retention is 30 days (`audit.default_retention_days`).
-
-## Raw message storage
-
-When `message` collection is enabled, bodies do not go in the main event table.
-They are gzipped into
-
-```
-/var/lib/mailut/messages/YYYY/MM/DD/HHMMSS-<random>.eml.gz
-```
-
-with mode 0600 inside 0700 directories. Filenames are generated — never derived
-from a subject, sender or any other attacker-controlled text — and every write
-is checked to stay inside the configured message directory, so a crafted message
-cannot escape it.
-
-SQLite records the reference, path, stored and original size, SHA-256, creation
-time and expiry. Deleting an event deletes its file first, then its rows.
-Messages larger than `message_max_bytes` are not truncated: the metadata is kept
-and the omission is written into the event's reason.
-
-Retained bodies are never printed by `mailut audit show`; the output only notes
-that a payload exists.
 
 ## Querying
 
@@ -230,7 +197,7 @@ mailut audit show --domain example.com --since 7d
 mailut audit show --recipient user@example.com --since 30d
 mailut audit show --sender sender@example.net --since 7d
 mailut audit show --recipient user@example.com --sender sender@example.net --since 7d
-mailut audit show --symbol RBL_SPAMHAUS --since 30d
+mailut audit show --symbol RBL_SPAMHAUS_SBL --since 30d
 mailut audit show --action reject --action greylist --since 7d
 mailut audit show --stage rcpt --since 7d
 mailut audit show --queue-id 4AbCd67890
@@ -251,13 +218,14 @@ from "no subject was recorded".
 Human output labels what cannot exist rather than leaving it blank:
 
 ```
-2026-09-17T12:41:03Z  soft_reject
+2026-09-17T12:41:03Z  greylist
   stage:    data
   from:     sender@example.net
   to:       user@example.com
   ip:       203.0.113.42
-  subject:  September invoice
-  rspamd:   5.43 / 6.00 (greylist)
+  subject:  not recorded (not in the Mailu logs)
+  msg-id:   abc123@example.net
+  rspamd:   5.43 / 15.00 (greylist)
   reason:   greylisting
   spf:      pass
   dkim:     pass
@@ -362,7 +330,7 @@ Each event gets a deterministic fingerprint over its source, timestamp, stage,
 action, envelope addresses, queue id, message id, remote IP, SMTP code, session
 id and reason, with a uniqueness constraint behind it. So:
 
-- re-delivering the same exporter request stores nothing new;
+- reading the same log lines twice stores nothing new;
 - restarting `mailut-audit.service` does not re-ingest history — the log cursor
   lives in SQLite and the fingerprints catch the deliberate one-second overlap;
 - but a genuine retry five minutes after a greylist has a different timestamp

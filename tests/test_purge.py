@@ -5,7 +5,6 @@ import datetime
 import io
 import json
 from contextlib import redirect_stdout
-from pathlib import Path
 
 from helpers import MailutTestCase, make_event
 
@@ -24,7 +23,6 @@ def purge_args(**kwargs):
 
 
 class PurgeTests(MailutTestCase):
-    allow_messages = "true"
 
     def add_scope(self, level="metadata", retention=30, message_retention=None):
         return scope_store.upsert_scope(
@@ -49,6 +47,26 @@ class PurgeTests(MailutTestCase):
         past = to_iso(utcnow() - datetime.timedelta(days=1))
         self.db().execute("UPDATE audit_events SET expires_at = ?", (past,))
         self.db().execute("UPDATE audit_payloads SET expires_at = ?", (past,))
+
+    def stored_payload(self, body=b"Subject: x\n\nbody"):
+        """An event with a stored message file, as an earlier version wrote them.
+
+        Nothing writes payloads any more, but the table is part of the schema,
+        so purge must still remove a payload row and its file together.
+        """
+        self.add_scope()
+        result = self.store().store(make_event())
+        directory = self.state_dir / "messages" / "2026" / "09" / "17"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"payload-{result['id']}.eml.gz"
+        path.write_bytes(body)
+        self.db().execute(
+            "INSERT INTO audit_payloads (event_id, kind, path, stored_bytes, original_bytes, "
+            "sha256, created_at, expires_at) VALUES (?, 'message', ?, ?, ?, ?, ?, ?)",
+            (result["id"], str(path), len(body), len(body), "0" * 64,
+             to_iso(utcnow()), result["expires_at"]),
+        )
+        return path
 
     def count(self):
         return self.db().execute("SELECT COUNT(*) AS n FROM audit_events").fetchone()["n"]
@@ -138,9 +156,7 @@ class PurgeTests(MailutTestCase):
 
     # -- payloads -----------------------------------------------------------
     def test_payload_files_are_deleted_with_their_events(self):
-        self.add_scope(level="message")
-        self.store().store(make_event(raw_message=b"Subject: x\n\nbody"))
-        path = Path(self.db().execute("SELECT path FROM audit_payloads").fetchone()["path"])
+        path = self.stored_payload()
         self.assertTrue(path.is_file())
         self.expire_all()
         code, output = self.run_purge(expired=True)
@@ -152,9 +168,7 @@ class PurgeTests(MailutTestCase):
         self.assertIn("file(s)", output)
 
     def test_expired_payload_is_removed_while_the_event_remains(self):
-        self.add_scope(level="message", retention=365, message_retention=1)
-        self.store().store(make_event(raw_message=b"Subject: x\n\nbody"))
-        path = Path(self.db().execute("SELECT path FROM audit_payloads").fetchone()["path"])
+        path = self.stored_payload()
         self.db().execute(
             "UPDATE audit_payloads SET expires_at = ?",
             (to_iso(utcnow() - datetime.timedelta(days=1)),),
@@ -167,9 +181,7 @@ class PurgeTests(MailutTestCase):
         )
 
     def test_missing_payload_file_does_not_block_the_purge(self):
-        self.add_scope(level="message")
-        self.store().store(make_event(raw_message=b"body"))
-        path = Path(self.db().execute("SELECT path FROM audit_payloads").fetchone()["path"])
+        path = self.stored_payload(b"body")
         path.unlink()
         self.expire_all()
         code, _ = self.run_purge(expired=True)

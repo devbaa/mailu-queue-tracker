@@ -147,10 +147,10 @@ class UninstallTests(unittest.TestCase):
         self.assertIn(str(self.root / "etc/mailut"), proc.stdout)
         self.assertIn(str(self.state), proc.stdout)
 
-    def test_uninstall_mentions_the_rspamd_exporter(self):
+    def test_uninstall_does_not_send_the_operator_to_edit_mailu(self):
+        """mailut never asks for Mailu or Rspamd changes, so none need undoing."""
         proc = self.uninstall("--yes")
-        self.assertIn("metadata exporter", proc.stdout)
-        self.assertIn("Remove that configuration manually", proc.stdout)
+        self.assertNotIn("exporter", proc.stdout)
 
     def test_unrelated_files_are_never_touched(self):
         self.uninstall("--yes")

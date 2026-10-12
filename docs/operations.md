@@ -217,9 +217,7 @@ Installed files that differ from the manifest are reported before removal; they
 are still removed, because they are application-owned. This never applies to
 `mailut.conf`, the database or the message archive.
 
-Afterwards you are reminded that your Mailu/Rspamd configuration may still
-contain a metadata exporter pointing at the collector: `mailut` does not edit
-Mailu configuration, so remove that snippet yourself.
+Nothing in Mailu needs undoing: `mailut` only ever read its logs.
 
 Re-running uninstall is harmless.
 

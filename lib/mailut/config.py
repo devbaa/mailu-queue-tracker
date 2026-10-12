@@ -14,7 +14,17 @@ from pathlib import Path
 from . import release
 from .util import MailutError, UsageError
 
+# Every level the database can record.  Only the first can be collected: the
+# Mailu container logs, which are where evidence comes from, carry no message
+# headers or bodies.  The other two remain valid stored values so that the
+# schema does not change, but no scope can be created at them.
 LEVELS = ("metadata", "headers", "message")
+COLLECTABLE_LEVELS = ("metadata",)
+
+_NO_CONTENT = (
+    "mailut collects from the Mailu container logs, which carry no message "
+    "headers or bodies; only 'metadata' can be collected"
+)
 
 # section -> key -> (default, kind).  This table is the single source of truth
 # for defaults and is also what mailut.conf(5) documents.
@@ -38,21 +48,13 @@ DEFAULTS: dict[str, dict[str, tuple[object, str]]] = {
         "default_retention_days": (30, "int"),
         "default_level": ("metadata", "str"),
         "store_accepted": (True, "bool"),
-        "allow_headers": (True, "bool"),
-        "allow_messages": (False, "bool"),
-        "message_retention_days": (30, "int"),
-        "message_max_bytes": (26214400, "int"),
         "max_retention_days": (3650, "int"),
     },
     "collector": {
-        "bind": ("127.0.0.1", "str"),
-        "port": (8765, "int"),
-        "max_body_bytes": (4194304, "int"),
         "log_poll_seconds": (30, "int"),
         "log_lookback": ("10m", "str"),
         "ingest_smtp_logs": (True, "bool"),
-        "token_file": ("", "str"),  # empty -> <confdir>/collector.token
-        "allow_unauthenticated": (False, "bool"),
+        "ingest_rspamd_logs": (True, "bool"),
     },
     "watch": {
         "window": ("15m", "str"),
@@ -161,18 +163,6 @@ class Config:
         return Path(release.layout()["rundir"])
 
     @property
-    def token_file(self) -> Path:
-        """Where the collector's shared ingestion token lives.
-
-        This has a default rather than meaning "no authentication" when empty:
-        a store of forensic evidence should not accept anonymous submissions
-        because nobody filled in a setting.  Opting out is a separate,
-        deliberate `allow_unauthenticated = true`.
-        """
-        value = self.get("collector", "token_file")
-        return Path(value) if value else Path(release.layout()["confdir"]) / "collector.token"
-
-    @property
     def compose_argv(self) -> list[str]:
         """The compose command as an argument vector (never a shell string)."""
         return shlex.split(self.get("mailu", "compose_command"))
@@ -185,32 +175,17 @@ class Config:
     def validate(self) -> None:
         where = str(self.path) if self.path else "<defaults>"
         level = self.get("audit", "default_level")
-        if level not in LEVELS:
-            raise MailutError(f"{where}: audit.default_level must be one of {', '.join(LEVELS)}")
-        if level == "headers" and not self.get("audit", "allow_headers"):
-            raise MailutError(f"{where}: audit.default_level=headers but audit.allow_headers is false")
-        if level == "message" and not self.get("audit", "allow_messages"):
-            raise MailutError(f"{where}: audit.default_level=message but audit.allow_messages is false")
+        if level not in COLLECTABLE_LEVELS:
+            raise MailutError(f"{where}: audit.default_level must be 'metadata': {_NO_CONTENT}")
         for section, key in (
             ("audit", "default_retention_days"),
-            ("audit", "message_retention_days"),
             ("audit", "max_retention_days"),
             ("watch", "retention_days"),
         ):
             if self.get(section, key) < 1:
                 raise MailutError(f"{where}: {section}.{key} must be >= 1")
-        if self.get("audit", "message_max_bytes") < 1024:
-            raise MailutError(f"{where}: audit.message_max_bytes must be >= 1024")
-        port = self.get("collector", "port")
-        if not 1 <= port <= 65535:
-            raise MailutError(f"{where}: collector.port must be between 1 and 65535")
-        if self.get("collector", "max_body_bytes") < 4096:
-            raise MailutError(f"{where}: collector.max_body_bytes must be >= 4096")
         if self.get("collector", "log_poll_seconds") < 1:
             raise MailutError(f"{where}: collector.log_poll_seconds must be >= 1")
-        token_file = self.get("collector", "token_file")
-        if token_file and not os.path.isabs(token_file):
-            raise MailutError(f"{where}: collector.token_file must be an absolute path")
         if not self.compose_argv:
             raise MailutError(f"{where}: mailu.compose_command must not be empty")
         for domain in self.get("mailu", "local_domains"):
@@ -218,23 +193,15 @@ class Config:
                 raise MailutError(f"{where}: mailu.local_domains contains an invalid domain {domain!r}")
 
     def check_level_allowed(self, level: str) -> None:
-        """Raise when a collection level is globally disabled.
+        """Raise unless ``level`` can actually be collected.
 
-        Never downgrade silently: an operator who asked for full messages must
-        be told that the host forbids them.
+        Never accept a level and then quietly collect less: an operator who
+        asked for headers or messages must be told they will not get them.
         """
         if level not in LEVELS:
             raise UsageError(f"invalid collection level {level!r}: expected one of {', '.join(LEVELS)}")
-        if level == "headers" and not self.get("audit", "allow_headers"):
-            raise UsageError(
-                "collection level 'headers' is disabled on this host "
-                "(set audit.allow_headers = true in the configuration file)"
-            )
-        if level == "message" and not self.get("audit", "allow_messages"):
-            raise UsageError(
-                "collection level 'message' is disabled on this host "
-                "(set audit.allow_messages = true in the configuration file)"
-            )
+        if level not in COLLECTABLE_LEVELS:
+            raise UsageError(f"collection level {level!r} is not available: {_NO_CONTENT}")
 
 
 def _coerce(path: Path, section: str, key: str, raw: str):

@@ -77,7 +77,7 @@ Every setting is documented in `man 5 mailut.conf`.
 Installing and enabling are separate steps; nothing starts by itself.
 
 ```bash
-sudo systemctl enable --now mailut-audit.service   # collector (long-running)
+sudo systemctl enable --now mailut-audit.service   # log collector (long-running)
 sudo systemctl enable --now mailut-purge.timer     # daily retention purge
 sudo systemctl enable --now mailut-watch.timer     # queue sampling, every 5 min
 ```
@@ -110,158 +110,47 @@ units apply the hardening that is compatible with it — `NoNewPrivileges`,
 directives that would silently stop collection. `mailut-purge.service` needs no
 network at all and adds `PrivateNetwork=yes`.
 
-## Wire up Rspamd
+## What the collector reads
 
-Mailu Tools never edits Mailu or Rspamd configuration. The exporter snippet is
-installed as data for you to copy deliberately:
-
-```bash
-sudo mkdir -p /opt/mailu/overrides/rspamd
-sudo cp /usr/local/share/mailut/rspamd/mailut-exporter.conf \
-        /opt/mailu/overrides/rspamd/
-```
-
-The container cannot reach the host's loopback address, so **the default
-`bind = 127.0.0.1` does not work for this** — both ends have to point at an
-address the container can reach. On a normal Linux Docker install that is the
-bridge gateway, usually `172.17.0.1`:
-
-```bash
-ip -4 addr show docker0        # find your gateway address
-```
-
-Set **both** sides to it:
-
-```ini
-# /etc/mailut/mailut.conf
-[collector]
-bind = 172.17.0.1
-port = 8765
-```
-
-```text
-# the url in mailut-exporter.conf
-url = "http://172.17.0.1:8765/rspamd";
-```
-
-That address is reachable by containers on this host and by nothing else, as
-long as your firewall does not forward the port.
-
-`mailut` verifies this rather than guessing. It asks Docker which networks the
-**antispam container** is attached to, inspects only those, and accepts the
-bind only if it is the gateway of one of them **and that network uses the
-bridge driver** (or if the bind is loopback). Three things it deliberately does
-*not* accept:
-
-- **A merely private address.** Your LAN or VPC address is private too, and
-  binding there would expose the collector to every machine on that network.
-- **A `macvlan` or `ipvlan` gateway.** Those drivers put containers directly on
-  the physical network, and the gateway is normally your real upstream router —
-  Docker's own documentation uses examples like `--gateway=192.168.32.254`.
-  Docker does not apply to them the packet-filtering rules it creates for
-  bridge networks either.
-- **The gateway of an unrelated Docker project.** The antispam container cannot
-  reach it, so the collector would simply never receive anything.
-
-An address Docker cannot be queried about is refused rather than assumed safe.
-Anything else requires `--allow-remote` deliberately.
-
-If your Mailu network is not the default bridge, use that network's gateway.
-This prints exactly what `mailut` looks at:
+There is nothing to wire up. `mailut-audit.service` reads two Mailu container
+logs with `docker compose logs`, exactly as you would by hand:
 
 ```bash
 cd /opt/mailu
-docker inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{end}}' \
-  "$(docker compose ps -q antispam)" |
-  xargs docker network inspect \
-    -f '{{.Name}} {{.Driver}}{{range .IPAM.Config}} {{.Gateway}}{{end}}'
+docker compose logs --since 10m antispam   # Rspamd: one line per scanned message
+docker compose logs --since 10m smtp       # Postfix: rejections before DATA, deliveries
 ```
 
-Use a gateway from a line whose driver is `bridge`.
+Nothing listens on the network, and no Mailu or Rspamd configuration changes.
+If Mailu is running and those commands work for root, collection works. If the
+antispam container is not up yet — at boot, for example — that poll fails, is
+logged, and is retried at the next interval; it does not crash the service.
 
-### The shared token (required)
-
-Restricting the bind address controls *who can reach* the collector. It does
-not establish *who is posting*: another container on the same bridge could
-submit invented audit records. Since the point of the audit trail is to be
-evidence, the collector **will not start without a shared secret**.
+The antispam lines are Rspamd's default per-message log line, which Mailu does
+not customise. Check that this host's lines are recognised:
 
 ```bash
-sudo mailut audit token generate
-```
-
-That writes a random token to `/etc/mailut/collector.token` (mode `0600`,
-directory created if needed) and prints the two lines to paste into the
-exporter rule:
-
-```text
-# in mailut-exporter.conf, alongside the url
-user = "mailut";
-password = "<the generated token>";
-```
-
-`make enable` runs `mailut audit token generate --if-missing`, so a fresh
-install gets one automatically; an existing token is never replaced unless you
-pass `--force`, because that would stop Rspamd submitting until its `password`
-is updated too. Print the current value with `mailut audit token show`.
-
-Rspamd's `metadata_exporter` cannot send an arbitrary header, but its HTTP
-backend does send Basic credentials built from `user`/`password`, and `mailut`
-accepts the token as the password. `Authorization: Bearer <token>` also works,
-which is easier with `curl`.
-
-`mailut` refuses to use a token file other accounts can read, and refuses to
-start on a missing, empty or too-short one rather than quietly accepting
-everything. `/health` stays unauthenticated so you can check wiring, but
-reports its counters only to authenticated callers.
-
-`mailut audit doctor` fails if the token is missing or unusable, and fails if
-the exporter's password does not match the one the collector expects — a
-mismatch that would otherwise show up only as silently missing evidence, since
-every export would be rejected with 401.
-
-If you genuinely need an open endpoint, say so explicitly:
-
-```ini
-[collector]
-allow_unauthenticated = true
-```
-
-`doctor` warns for as long as that is set, and the collector repeats the
-warning at every start.
-
-### IPv6
-
-An IPv6 bind works the same way: `bind = ::1`, or the IPv6 gateway of a bridge
-network the antispam container is attached to. Write the exporter URL with
-brackets, as URLs require:
-
-```text
-url = "http://[fd00::1]:8765/rspamd";
-```
-
-Then restart the container and verify:
-
-```bash
-cd /opt/mailu && sudo docker compose restart antispam
 mailut audit doctor
 ```
 
-`doctor` checks that the database is writable, the collector answers, the Mailu
-compose directory looks right and the smtp service is reachable; that an Rspamd
-override in your Mailu tree actually targets this collector's port; that the
-antispam container can reach the collector; that no scope asks for a collection
-level the host disables; and the state of the units. It changes nothing and
-exits 4 if a critical check fails.
+The `rspamd log` check reads the recent antispam log and parses it the way the
+collector will. It passes when the lines are present and recognised, warns
+when there are none in the window (no mail was scanned yet), and fails when
+lines are present but none is recognised — meaning Rspamd's `log_format` was
+changed on this host, so no Rspamd decision would be recorded.
 
-The two Rspamd checks are the ones that catch a half-finished setup. `rspamd
-exporter` finds the `metadata_exporter` in `<compose_dir>/overrides/rspamd/`,
-reads the URL it actually posts to, and compares it with the collector's
-address and port — so an exporter aimed at the wrong host is reported, not
-accepted because it happens to mention the right port. `rspamd -> collector`
-then makes an HTTP request to **that same URL** from inside the antispam
-container. If the container has neither `curl` nor `wget`, the second check
-reports "not verified" rather than passing.
+Two limits come from the log itself:
+
+- **No headers or bodies.** The logs contain neither, so only metadata is
+  collected; `mailut audit add --level headers` is refused with that reason.
+- **Long recipient lists are cut.** Rspamd names at most `log_task_max_elts`
+  recipients per line (7 by default). A message to more is attributed to those
+  only, and the event's reason says so; the other recipients still appear in
+  the smtp log as they are delivered or rejected.
+
+`doctor` also checks the database, the Mailu compose directory and services,
+permissions, scope levels and the units. It changes nothing and exits 4 if a
+critical check fails.
 
 ## Without systemd
 

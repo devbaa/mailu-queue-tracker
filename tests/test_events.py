@@ -1,9 +1,6 @@
 """Storing events: scope binding, levels, payloads, retention, de-duplication."""
 
 import datetime
-import gzip
-import stat
-from pathlib import Path
 
 from helpers import MailutTestCase, make_event
 
@@ -153,18 +150,16 @@ class EventStoreTests(MailutTestCase):
         )
         self.assertEqual(self.db().execute("SELECT COUNT(*) AS n FROM audit_payloads").fetchone()["n"], 0)
 
-    def test_headers_level_stores_headers_but_no_body(self):
+    def test_a_headers_scope_still_stores_no_payload(self):
+        """No source supplies content, so nothing beyond metadata is ever kept."""
         self.add_scope(level="headers")
         self.store().store(
             make_event(headers_text="Subject: x\nFrom: y\n", raw_message=b"Subject: x\n\nbody")
         )
-        rows = self.db().execute("SELECT kind, content, path FROM audit_payloads").fetchall()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["kind"], "headers")
-        self.assertIn("Subject: x", rows[0]["content"])
-        self.assertIsNone(rows[0]["path"])
+        self.assertEqual(self.db().execute("SELECT COUNT(*) AS n FROM audit_payloads").fetchone()["n"], 0)
+        self.assertEqual(self.db().execute("SELECT level FROM audit_events").fetchone()["level"], "metadata")
 
-    def test_message_level_is_ignored_when_globally_disabled(self):
+    def test_a_message_scope_is_collected_as_metadata(self):
         """A scope can't be created at this level, and stale rows downgrade."""
         self.db().execute(
             "INSERT INTO audit_scopes (scope_type, scope_value, mode, level, retention_days, "
@@ -175,72 +170,3 @@ class EventStoreTests(MailutTestCase):
         self.assertEqual(row["level"], "metadata")
         self.assertEqual(self.db().execute("SELECT COUNT(*) AS n FROM audit_payloads").fetchone()["n"], 0)
 
-
-class MessageStorageTests(MailutTestCase):
-    allow_messages = "true"
-    message_max_bytes = 4096
-
-    def add_scope(self, **kwargs):
-        params = {"scope_type": "all", "value": "*", "mode": "include", "level": "message",
-                  "retention_days": 30, "message_retention_days": None}
-        params.update(kwargs)
-        return scope_store.upsert_scope(self.db(), **params)[0]
-
-    def test_message_is_stored_compressed_and_restricted(self):
-        self.add_scope()
-        body = b"Subject: stored\n\nhello world\n"
-        self.store().store(make_event(raw_message=body))
-        row = self.db().execute(
-            "SELECT * FROM audit_payloads WHERE kind = 'message'"
-        ).fetchone()
-        self.assertIsNotNone(row)
-        path = Path(row["path"])
-        self.assertTrue(path.is_file())
-        self.assertTrue(str(path).startswith(str(self.state_dir / "messages")))
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(gzip.decompress(path.read_bytes()), body)
-        self.assertEqual(row["original_bytes"], len(body))
-        self.assertEqual(len(row["sha256"]), 64)
-
-    def test_message_directories_are_date_partitioned(self):
-        self.add_scope()
-        when = utcnow()
-        self.store().store(make_event(occurred_at=when, raw_message=b"x"))
-        row = self.db().execute("SELECT path FROM audit_payloads").fetchone()
-        expected = f"{when.year:04d}/{when.month:02d}/{when.day:02d}"
-        self.assertIn(expected, row["path"])
-
-    def test_oversized_message_is_not_stored_and_is_recorded(self):
-        self.add_scope()
-        self.store().store(make_event(raw_message=b"x" * 5000))
-        self.assertEqual(
-            self.db().execute("SELECT COUNT(*) AS n FROM audit_payloads WHERE kind = 'message'")
-            .fetchone()["n"],
-            0,
-        )
-        reason = self.db().execute("SELECT reason FROM audit_events").fetchone()["reason"]
-        self.assertIn("message_max_bytes", reason)
-
-    def test_message_retention_can_be_shorter_than_metadata_retention(self):
-        self.add_scope(retention_days=365, message_retention_days=7)
-        self.store().store(make_event(raw_message=b"body"))
-        event = self.db().execute("SELECT occurred_at, expires_at FROM audit_events").fetchone()
-        payload = self.db().execute(
-            "SELECT expires_at FROM audit_payloads WHERE kind = 'message'"
-        ).fetchone()
-        self.assertEqual((from_iso(event["expires_at"]) - from_iso(event["occurred_at"])).days, 365)
-        self.assertEqual((from_iso(payload["expires_at"]) - from_iso(event["occurred_at"])).days, 7)
-
-    def test_filenames_are_generated_not_derived_from_the_message(self):
-        self.add_scope()
-        self.store().store(
-            make_event(
-                subject="../../etc/passwd",
-                envelope_from="../../../root@example.net",
-                raw_message=b"body",
-            )
-        )
-        path = Path(self.db().execute("SELECT path FROM audit_payloads").fetchone()["path"])
-        self.assertNotIn("passwd", str(path))
-        self.assertNotIn("..", str(path))
-        self.assertTrue(path.name.endswith(".eml.gz"))

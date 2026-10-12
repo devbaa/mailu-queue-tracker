@@ -138,6 +138,10 @@ def _strip_prefixes(line: str, *, now: _dt.datetime | None = None) -> tuple[_dt.
     return None, rest
 
 
+# Shared with the Rspamd parser: both read `docker compose logs --timestamps`.
+strip_prefixes = _strip_prefixes
+
+
 def _tail_fields(detail: str) -> dict:
     """Extract the ``from=<> to=<> proto= helo=`` trailer of a reject line."""
     fields: dict[str, str] = {}

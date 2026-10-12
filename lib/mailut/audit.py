@@ -6,6 +6,7 @@ import json
 import sys
 
 from . import scopes as scope_store
+from .config import COLLECTABLE_LEVELS
 from .util import UsageError, columns, sanitize
 
 
@@ -19,25 +20,11 @@ def _retention(args, config) -> int:
     return value
 
 
-def _message_retention(args, config, level: str) -> int | None:
-    if args.message_retention is None:
-        return None
-    if level != "message":
-        raise UsageError("--message-retention only applies to --level message")
-    maximum = config.get("audit", "max_retention_days")
-    if args.message_retention < 1:
-        raise UsageError("--message-retention must be at least 1 day")
-    if args.message_retention > maximum:
-        raise UsageError(f"--message-retention must not exceed audit.max_retention_days ({maximum})")
-    return args.message_retention
-
-
 def cmd_add(args, config, conn) -> int:
     value = scope_store.normalize_target(args.scope_type, getattr(args, "value", None))
     level = args.level or config.get("audit", "default_level")
     config.check_level_allowed(level)  # fails loudly; never downgrades silently
     retention = _retention(args, config)
-    message_retention = _message_retention(args, config, level)
 
     scope, created = scope_store.upsert_scope(
         conn,
@@ -46,7 +33,7 @@ def cmd_add(args, config, conn) -> int:
         mode="include",
         level=level,
         retention_days=retention,
-        message_retention_days=message_retention,
+        message_retention_days=None,
     )
     verb = "Added" if created else "Updated"
     print(
@@ -169,22 +156,18 @@ def cmd_scopes(args, config, conn) -> int:
     if degraded:
         print()
         print(
-            f"warning: {degraded} scope(s) ask for a collection level this host disables "
+            f"warning: {degraded} scope(s) ask for a collection level no source supplies "
             f"and are collecting metadata only.",
             file=sys.stderr,
         )
         print(
-            "         Re-enable audit.allow_headers / audit.allow_messages, or lower the "
-            "scope's --level.",
+            "         The Mailu logs carry no headers or bodies; re-add the scope to "
+            "record it as metadata.",
             file=sys.stderr,
         )
     return 0
 
 
 def _effective_level(level: str, config) -> str:
-    """The level actually collected, given what the host currently permits."""
-    if level == "headers" and not config.get("audit", "allow_headers"):
-        return "metadata"
-    if level == "message" and not config.get("audit", "allow_messages"):
-        return "metadata"
-    return level
+    """The level actually collected: only metadata exists in the logs."""
+    return level if level in COLLECTABLE_LEVELS else "metadata"

@@ -52,8 +52,8 @@ mailut config check
 mailut doctor
 ```
 
-`mailut doctor` verifies configuration, Docker, the database, permissions, the
-collector and the systemd units. It changes nothing.
+`mailut doctor` verifies configuration, Docker, the database, permissions, that
+the Rspamd log can be read, and the systemd units. It changes nothing.
 
 ## Queue and abuse
 
@@ -82,7 +82,7 @@ Collection is **opt-in**. Nothing is recorded until you add a scope.
 ```bash
 mailut audit add all
 mailut audit add domain customer.example --retention 365
-mailut audit add email legal@example.com --level headers
+mailut audit add email legal@example.com
 
 mailut audit remove domain internal.example.com
 mailut audit add email monitored@internal.example.com
@@ -99,43 +99,25 @@ Then query it:
 ```bash
 mailut audit show --recipient john@example.com --since 7d
 mailut audit show --sender supplier@example.net --domain example.com --since 30d --json
-mailut audit show --symbol RBL_SPAMHAUS --since 30d
+mailut audit show --symbol RBL_SPAMHAUS_SBL --since 30d
 mailut audit stats --domain example.com --since 30d
 ```
 
-To receive Rspamd decisions, copy the shipped exporter snippet into your Mailu
-overrides — `mailut` never edits Mailu configuration itself:
+There is nothing to wire up. `mailut-audit.service` reads two Mailu container
+logs with `docker compose logs`, the same way you would by hand:
 
-```bash
-sudo mailut audit token generate          # prints the lines to paste below
-sudo cp /usr/local/share/mailut/rspamd/mailut-exporter.conf \
-        /opt/mailu/overrides/rspamd/
-sudo "$EDITOR" /opt/mailu/overrides/rspamd/mailut-exporter.conf
-cd /opt/mailu && sudo docker compose restart antispam
-mailut audit doctor
-```
+- **antispam**: Rspamd's line for every scanned message, with its action,
+  score and symbols;
+- **smtp**: the Postfix rejections made before DATA, and local deliveries,
+  which Rspamd never sees.
 
-The antispam container cannot reach the host's loopback address, so the
-exporter's `url` and `collector.bind` must both name an address it *can* reach
-— usually the Docker bridge gateway, `172.17.0.1`. `mailut` accepts a
-non-loopback bind only if it is the gateway of a **bridge** network the
-**antispam container is actually attached to**: a merely private address could
-be your LAN, a `macvlan` gateway is usually the real upstream router, and an
-unrelated project's bridge is not reachable from Mailu at all. An address it
-cannot verify is refused, not assumed safe.
+Nothing listens on the network, and no Mailu or Rspamd configuration changes.
+`mailut audit doctor` reads the recent antispam log and confirms its lines are
+recognised.
 
-Ingestion is authenticated by default: run `mailut audit token generate` and
-put the same token in the exporter's `password`. The bind rules decide who can
-reach the collector; the token decides who may submit evidence, which is what
-stops another container on the same network forging audit records. The
-collector refuses to start without one rather than accepting anonymous
-submissions — opting out takes an explicit `allow_unauthenticated = true`.
-
-`mailut audit doctor` checks every part of this: that an override in your Mailu
-tree posts to this collector's address, that the container can actually reach
-that URL, and that the exporter's credentials will be accepted. Full
-instructions in [docs/install.md](docs/install.md); audit details in
-[docs/audit.md](docs/audit.md).
+Because the logs carry no message headers or bodies, only metadata is ever
+collected. Full instructions in [docs/install.md](docs/install.md); audit
+details in [docs/audit.md](docs/audit.md).
 
 ### Two things that are not the same
 

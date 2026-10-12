@@ -103,29 +103,18 @@ interpreted as the remote sender.
 .BI "mailut audit add email " ADDRESS
 Ensure the scope is collected. Options:
 .BI \-\-retention " DAYS"
-(metadata retention for records created from now on),
-.BI \-\-level " LEVEL"
-.RB ( metadata ", " headers " or " message ),
-and
-.BI \-\-message\-retention " DAYS"
-(only with
-.BR "\-\-level message" ).
-A level that the host disables in
-.BR mailut.conf (5)
-is rejected with an error; the request is never silently downgraded.
-.IP
-If the host configuration is tightened
-.I after
-a scope was created, the scope keeps its recorded level but collection falls
-back to
-.BR metadata .
-That is never silent either:
-.B mailut audit scopes
-shows the effective level as
-.RI ` "metadata (asked headers)" '
-with a warning, and
-.B mailut doctor
-reports it.
+(metadata retention for records created from now on) and
+.BI \-\-level " LEVEL" .
+Only
+.B metadata
+is available; asking for
+.B headers
+or
+.B message
+is refused with the reason, because the logs
+.B mailut
+reads carry no message headers or bodies. A request is never accepted and then
+silently downgraded.
 .TP
 .B mailut audit remove all
 .TQ
@@ -177,28 +166,25 @@ A connection rejected before
 has no recipient to attribute. Such an event is collected only when the
 .B all
 scope is including, because no narrower scope could be shown to apply.
-.SS Collection levels
-.TP
-.B metadata
-The default. Envelope and connection metadata, the decision, SMTP response,
-Rspamd score/action and Rspamd symbols. It stores
+.SS Collection level
+Everything
+.B mailut
+records is metadata: envelope and connection details, the decision, the SMTP
+response, Rspamd's score, action and symbols. It stores
 .B no
-message body, no attachments, no complete RFC822 message and no arbitrary raw
-header set.
-.TP
+message body, no attachments, no complete RFC822 message and no header set,
+because the Mailu container logs it reads contain none of them.
+.PP
+The database can still represent the
 .B headers
-Additionally retains the complete RFC822 header section, when the Rspamd
-exporter supplies it. No body.
-.TP
+and
 .B message
-Additionally retains the complete original message. Globally disabled by
-default; see
-.B allow_messages
-in
-.BR mailut.conf (5).
-Stored messages are gzipped under
-.I /var/lib/mailut/messages/YYYY/MM/DD/
-with generated names and mode 0600, and are never shown in ordinary output.
+levels, but no scope can be created at them. A scope recorded at one of them
+by an earlier version is collected as metadata, and both
+.B mailut audit scopes
+and
+.B mailut doctor
+say so.
 .SS Querying
 .TP
 .B mailut audit show
@@ -247,67 +233,30 @@ events are kept for the next run.
 .SS Collector
 .TP
 .B mailut audit collect
-Run the collector in the foreground. It listens for Rspamd metadata-exporter
-posts on the configured address and polls the Mailu smtp container log for the
-SMTP evidence Rspamd never sees. This is what
+Run the collector in the foreground. Every
+.B collector.log_poll_seconds
+it reads what is new in two Mailu container logs with
+.BR "docker compose logs" :
+the antispam log, where Rspamd writes one line per scanned message, and the
+smtp log, for the Postfix rejections and deliveries Rspamd never sees. This is
+what
 .B mailut\-audit.service
 runs; logging goes to stdout and stderr, therefore to the journal.
 .IP
-The bind address is checked before the socket is opened. A loopback address is
-accepted, as is the gateway of a Docker
-.B bridge
-network that the antispam container is attached to \(em an address reachable by
-containers on this host and by nothing else, provided the port is not
-forwarded. Anything else, including an address that cannot be verified, is
-refused unless
-.B \-\-allow\-remote
-is given. See
-.B bind
-in
-.BR mailut.conf (5)
-for why a merely private address, a
-.BR macvlan / ipvlan
-gateway, or an unrelated project's bridge does not qualify.
-.IP
-A client must present the shared token to submit evidence. A missing or
-unusable token file is a startup failure, never a silent fallback to accepting
-everything; running without one requires
-.B collector.allow_unauthenticated
-and is warned about at every start. Create the token with
-.BR "mailut audit token generate" .
+Nothing listens on the network and no Mailu configuration is changed. Each log
+has its own cursor, so a quiet or unavailable log does not hold up the other,
+and a restart resumes where it stopped. If the antispam container is not up
+yet, that poll fails, is logged, and is retried at the next interval.
 .IP
 .B \-\-once
-performs exactly one log poll and exits, for diagnostics. It opens no socket,
-so neither the bind assessment nor the token is checked: reading the smtp log
-must keep working when Docker is unreachable, the antispam container is down or
-the token file is broken \(em which is when the diagnostic is most wanted.
-.TP
-.B mailut audit token generate [\-\-force] [\-\-if\-missing]
-Write a new random token to
-.B collector.token_file
-with mode 0600, creating the directory if needed, and print the
-.B user
-and
-.B password
-lines to add to the Rspamd exporter rule. An existing token is never replaced
-without
-.BR \-\-force ,
-because doing so stops Rspamd submitting until its
-.B password
-is updated to match.
-.B \-\-if\-missing
-succeeds quietly when a token already exists, which is what
-.B make enable
-uses.
-.TP
-.B mailut audit token show
-Print the current token on standard output, for pasting into the exporter rule.
-Warnings about the file's permissions go to standard error, so they cannot end
-up inside a configuration file.
+reads each log once and exits, for diagnostics.
 .TP
 .B mailut audit ingest {rspamd|postfix} [\-\-file PATH]
-Ingest exporter payloads (JSON or JSON Lines) or Postfix log lines from a file
-or standard input. Useful for replaying evidence and for testing.
+Ingest saved log lines from a file or standard input:
+.B rspamd
+reads antispam container lines,
+.B postfix
+reads smtp container lines. Useful for replaying evidence and for testing.
 .TP
 .B mailut audit doctor
 Alias for
@@ -418,34 +367,25 @@ and the samples where a threshold was crossed.
 .B mailut status
 Concise operational status: version, configuration file, Mailu compose
 location, database path, size and schema version, scope and event counts,
-latest event, latest purge, message storage size, collector state and the state
-of every unit this application owns.
+latest event, latest purge, message storage size, how far each Mailu log has
+been read, and the state of every unit this application owns.
 .TP
 .B mailut doctor
 Read-only diagnostics. Checks the Python version, the Docker executable and
 compose directory, the configured services, SQLite readability, writability and
-schema, filesystem permissions, the collector port and \(em where systemd
-exists \(em the units.
+schema, filesystem permissions and \(em where systemd exists \(em the units.
 .IP
-Two checks cover the Rspamd wiring, which is the part most often left half
-finished.
-.B "rspamd exporter"
-looks for a
-.B metadata_exporter
-under
-.I <compose_dir>/overrides/rspamd/
-that targets this collector's port; the example shipped under the data
-directory is deliberately not treated as evidence of anything, since
-.B make install
-always puts it there.
-.B "rspamd -> collector"
-makes an HTTP request to the collector
-.I from inside
-the antispam container, and reports "not verified" rather than success when the
-container has no HTTP client.
+.B "rspamd log"
+reads the recent antispam log and parses it the way the collector will. It
+passes when Rspamd's per-message lines are there and recognised; warns when
+there are none in the window (no mail scanned, or Rspamd not logging to the
+console); and fails when they are there but none is recognised, which means
+Rspamd's
+.B log_format
+on this host is not the default and no Rspamd decision would be recorded.
 .IP
-A further check reports scopes whose collection level the host currently
-disables. It changes nothing and exits
+A further check reports scopes recorded at a level no source supplies. It
+changes nothing and exits
 .B 4
 when a critical check fails.
 .SH LIFECYCLE COMMANDS
@@ -581,9 +521,7 @@ Every record stores its expiry when it is created, from the retention of the
 scope that was in force at that moment. Changing a scope's retention therefore
 affects
 .B future
-records only; it does not rewrite the expiry of history. Raw-message retention
-may be shorter than metadata retention, in which case the stored message is
-deleted while its metadata remains.
+records only; it does not rewrite the expiry of history.
 .SH FILES
 .TP
 .I /usr/local/sbin/mailut
@@ -593,7 +531,7 @@ The command.
 Application library.
 .TP
 .I /usr/local/share/mailut/
-Example configuration, the Rspamd exporter example and the install manifest.
+Example configuration and the install manifest.
 .TP
 .I /usr/local/share/mailut/install-manifest.json
 The authoritative list of files this release owns; used by upgrade and
@@ -673,54 +611,21 @@ Another lifecycle operation holds the lock.
 Mail metadata is sensitive. The database and the message store are mode 0600
 and 0700 and owned by root.
 .PP
-The collector accepts audit evidence over HTTP, so it is protected at two
-levels, neither of which is sufficient alone.
+The collector opens no network socket. It only reads Mailu's container logs
+through the Docker socket, as
+.B docker compose logs
+does, so there is no endpoint to expose, authenticate or firewall, and nothing
+another process could post fabricated evidence to.
 .PP
-.B Who can reach it.
-It binds to 127.0.0.1 by default. The Rspamd exporter runs inside a container
-and cannot reach the host's loopback, so the documented setup binds instead to
-the gateway of a Docker bridge network the antispam container is attached to
-\(em an address reachable by containers on this host and by nothing else,
-provided the port is not forwarded. That test is deliberately narrow: a merely
-private address may be a LAN or VPC address reachable by every machine on that
-network; a
-.B macvlan
-or
-.B ipvlan
-gateway is normally the real upstream router and is not covered by the packet
-filtering Docker applies to bridge networks; and an unrelated project's bridge
-is not reachable from Mailu at all. An address that cannot be verified is
-refused rather than assumed safe, as is a wildcard or publicly routable bind,
-unless
-.B \-\-allow\-remote
-is given deliberately. Request bodies are size-limited.
-.PP
-.B Who may submit.
-Ingestion requires a shared token by default, presented as HTTP Basic
-credentials (what Rspamd's metadata_exporter can send) or as a Bearer header.
-The collector refuses to start without one rather than accepting anonymous
-submissions, because a trail that any process able to reach the port can write
-to is not evidence; opting out takes a deliberate
-.BR collector.allow_unauthenticated ,
-which
-.B mailut doctor
-warns about for as long as it is set. Create the token with
-.BR "mailut audit token generate" ;
-it must not be readable by other accounts, and one that is, is refused rather
-than used. The unauthenticated
-.I /health
-endpoint exposes liveness only; its counters require the token.
-.PP
-Ingested values \(em senders, recipients, HELO names, subjects, Rspamd symbol
+Ingested values \(em senders, recipients, HELO names, Message-IDs, Rspamd symbol
 options and Postfix rejection text \(em are chosen by the remote side. They are
 never interpolated into a shell command (every external program is run as an
 argument vector), never used to build a filesystem path, and terminal control
 characters are escaped before anything is printed. All SQL uses bound
 parameters.
 .PP
-Complete message retention is disabled by default and must be enabled
-deliberately in the configuration file. Retained bodies are never printed by
-ordinary list output.
+No message body or header set is ever retained: the logs that are read do not
+contain them.
 .PP
 .B mailut\-audit.service
 and
@@ -763,7 +668,7 @@ Investigate a customer who says a supplier's mail never arrived:
 Find everything an RBL rejected in the last month, as JSON Lines:
 .PP
 .nf
-    mailut audit show --symbol RBL_SPAMHAUS --since 30d --json
+    mailut audit show --symbol RBL_SPAMHAUS_SBL --since 30d --json
 .fi
 .PP
 Clean a compromised account's queue, checking first:

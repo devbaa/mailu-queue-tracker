@@ -115,7 +115,6 @@ install-dirs:
 	$(INSTALL) -d -m 0755 $(DESTDIR)$(LIBDIR)/$(PACKAGE)/ingest
 	$(INSTALL) -d -m 0755 $(DESTDIR)$(LIBDIR)/$(PACKAGE)/lifecycle
 	$(INSTALL) -d -m 0755 $(DESTDIR)$(DATADIR)
-	$(INSTALL) -d -m 0755 $(DESTDIR)$(DATADIR)/rspamd
 	$(INSTALL) -d -m 0755 $(DESTDIR)$(MANDIR)/man5
 	$(INSTALL) -d -m 0755 $(DESTDIR)$(MANDIR)/man8
 	$(INSTALL) -d -m 0750 $(DESTDIR)$(CONFDIR)
@@ -151,7 +150,6 @@ install-lib:
 
 install-data:
 	$(INSTALL_DATA) etc/mailut.conf.example $(DESTDIR)$(DATADIR)/mailut.conf.example
-	$(INSTALL_DATA) share/rspamd/mailut-exporter.conf $(DESTDIR)$(DATADIR)/rspamd/mailut-exporter.conf
 	$(INSTALL_DATA) README.md $(DESTDIR)$(DATADIR)/README.md
 
 install-man:
@@ -183,7 +181,6 @@ manifest:
 	  --owned library:$(DESTDIR)$(LIBDIR)/$(PACKAGE) \
 	  --owned data:$(DESTDIR)$(DATADIR)/mailut.conf.example \
 	  --owned data:$(DESTDIR)$(DATADIR)/README.md \
-	  --owned data:$(DESTDIR)$(DATADIR)/rspamd \
 	  --owned man:$(DESTDIR)$(MANDIR)/man8/mailut.8 \
 	  --owned man:$(DESTDIR)$(MANDIR)/man5/mailut.conf.5 \
 	  $(foreach unit,$(UNITS),--owned unit:$(DESTDIR)$(SYSTEMD_UNIT_DIR)/$(unit)) \
@@ -192,7 +189,6 @@ manifest:
 	  --directory $(LIBDIR)/$(PACKAGE)/lifecycle \
 	  --directory $(LIBDIR)/$(PACKAGE) \
 	  --directory $(LIBDIR) \
-	  --directory $(DATADIR)/rspamd \
 	  --directory $(DATADIR) \
 	  --preserve $(CONFDIR) \
 	  --preserve $(STATEDIR) \
@@ -209,10 +205,6 @@ manifest:
 	  --layout rundir=$(RUNDIR)
 
 enable: ## Enable and start the collector, purge timer and watch timer
-	@# The collector requires a shared token, so make sure one exists before
-	@# starting it. --if-missing never disturbs a working installation, and the
-	@# generator is the application's own, so there is one implementation.
-	"$(DESTDIR)$(SBINDIR)/$(PACKAGE)" audit token generate --if-missing
 	systemctl enable --now mailut-audit.service
 	systemctl enable --now mailut-purge.timer
 	systemctl enable --now mailut-watch.timer
