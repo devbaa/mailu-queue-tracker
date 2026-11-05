@@ -2,9 +2,8 @@
 
 ``make install`` generates it by walking what it has just installed (see
 ``tools/gen-manifest.py``), so there is exactly one list and it cannot drift
-from what the Makefile actually does.  ``mailut upgrade`` and
-``mailut uninstall`` both work from it, which is why neither needs the source
-checkout it was installed from.
+from what the Makefile actually does.  ``mailut uninstall`` works from it,
+which is why it does not need the source checkout it was installed from.
 
 Mutable operator data — the configuration file, the database, retained
 messages and database backups — is deliberately *not* in the manifest.  It is

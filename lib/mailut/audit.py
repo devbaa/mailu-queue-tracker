@@ -38,9 +38,7 @@ def cmd_add(args, config, conn) -> int:
     verb = "Added" if created else "Updated"
     print(
         f"{verb} include scope: {scope.scope_type} {sanitize(scope.label())} "
-        f"(level {scope.level}, retention {scope.retention_days}d"
-        + (f", messages {scope.message_retention_days}d" if scope.message_retention_days else "")
-        + ")"
+        f"(level {scope.level}, retention {scope.retention_days}d)"
     )
     _print_effect(conn, config, scope)
     return 0
@@ -88,9 +86,9 @@ def cmd_scopes(args, config, conn) -> int:
     if args.test:
         result = scope_store.describe_resolution(conn, args.test, local_domains=config.local_domains)
         scope = result["scope"]
-        # Report what would actually be collected, not what the scope asked
-        # for: the host can disable a level after the scope was created, and
-        # this answer must agree with `mailut audit scopes`.
+        # Report what is actually collected, not what the scope asked for (a
+        # scope from an older build may ask for more than metadata); this
+        # answer must agree with `mailut audit scopes`.
         effective = _effective_level(scope["level"], config) if scope else None
         if scope:
             result["effective_level"] = effective
@@ -135,9 +133,8 @@ def cmd_scopes(args, config, conn) -> int:
             effective = _effective_level(level, config)
             if effective != level:
                 # Show what is actually being collected, not just what was asked
-                # for: the host configuration can be tightened after a scope is
-                # created, and an operator must not read "headers" here while
-                # only metadata is being retained.
+                # for: an operator must not read "headers" here while only
+                # metadata is being retained.
                 level = f"{effective} (asked {level})"
                 degraded += 1
         rows.append(
@@ -147,10 +144,9 @@ def cmd_scopes(args, config, conn) -> int:
                 scope.mode,
                 level if included else "-",
                 f"{scope.retention_days}d" if included else "-",
-                (f"{scope.message_retention_days}d" if scope.message_retention_days and included else "-"),
             )
         )
-    print(columns(rows, ["TYPE", "VALUE", "MODE", "LEVEL", "RETENTION", "MSG-RETENTION"]))
+    print(columns(rows, ["TYPE", "VALUE", "MODE", "LEVEL", "RETENTION"]))
     print()
     print("Most specific rule wins (email > domain > all); at equal specificity, exclude wins.")
     if degraded:

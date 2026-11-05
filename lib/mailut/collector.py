@@ -54,7 +54,7 @@ class Ingestor:
 
     def __init__(self, config):
         self.config = config
-        self.database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+        self.database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
         self.conn = self.database.connect()
         self.lock = threading.Lock()
         self.store = EventStore(self.conn, config)

@@ -265,7 +265,7 @@ def cmd_stats(args, config, conn) -> int:
     from .db import Database  # local import: keeps this module importable alone
     from . import payloads as payload_store
 
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     stats = {
         "events": span["n"] or 0,
         "oldest": span["oldest"],

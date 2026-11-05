@@ -2,7 +2,7 @@
 """Write the buildinfo.json that lets an installed mailut know its own version.
 
 After installation there is no VERSION file and no git checkout, so this is
-where `mailut version`, `mailut upgrade` and `mailut uninstall` learn what is
+where `mailut version` and `mailut uninstall` learn what is
 installed and where.
 """
 

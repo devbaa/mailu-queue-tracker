@@ -92,7 +92,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  2  invalid command line\n"
             "  3  a destructive action was not confirmed\n"
             "  4  a verification or doctor check failed\n"
-            "  5  another lifecycle operation holds the lock\n"
             "\n"
             f"See mailut(8) and mailut.conf(5).  Upstream: {release.UPSTREAM_URL}"
         ),
@@ -371,28 +370,6 @@ def _build_audit(sub) -> None:
 
 
 def _build_lifecycle(sub) -> None:
-    upgrade_parser = _add(
-        sub, "upgrade", "install a newer public release",
-        f"Upgrade from the project's public GitHub releases at {release.UPSTREAM_URL}.\n"
-        "No GitHub account or token is needed, and the original source checkout is not\n"
-        "required. The release tarball's SHA-256 is always verified; configuration and\n"
-        "audit data are preserved.",
-    )
-    upgrade_parser.add_argument("--check", action="store_true",
-                                help="report the available version and exit (no changes, no root)")
-    upgrade_parser.add_argument("-n", "--dry-run", action="store_true",
-                                help="describe the upgrade without changing anything")
-    upgrade_parser.add_argument("--version", dest="target_version", metavar="X.Y.Z",
-                                help="install this published release instead of the latest")
-    upgrade_parser.add_argument("--allow-downgrade", action="store_true",
-                                help="permit installing an older release (schema permitting)")
-    upgrade_parser.add_argument("--prerelease", action="store_true",
-                                help="consider prereleases (ignored by default)")
-    upgrade_parser.add_argument("-y", "--yes", action="store_true",
-                                help="do not prompt (for automated deployment)")
-    upgrade_parser.add_argument("--verbose", action="store_true", help="show transfer/install detail")
-    upgrade_parser.set_defaults(func=_lazy("lifecycle.upgrade", "cmd_upgrade"))
-
     uninstall_parser = _add(
         sub, "uninstall", "remove the application",
         "Remove the files this application installed, using its own install manifest.\n"
@@ -458,10 +435,7 @@ def _cmd_version(args, config=None):
                 "commit": info["commit"],
                 "built_at": info["built_at"],
                 "installed": info["installed"],
-                # The schema this build knows how to migrate to. `mailut
-                # upgrade` reads it from the *newly installed* command, because
-                # the upgrading process still has the old release's constants
-                # loaded and cannot judge the new one by them.
+                # The schema this build migrates the database to.
                 "schema_version": migrations.LATEST,
             },
             sys.stdout,
@@ -514,7 +488,7 @@ def _cmd_config_show(args, config):
 def _cmd_db_migrate(args, config):
     from .db import Database
 
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     conn = database.connect()
     try:
         from .db import schema_version
@@ -529,7 +503,7 @@ def _cmd_db_migrate(args, config):
 def _cmd_db_optimize(args, config):
     from .db import Database
 
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     conn = database.connect()
     try:
         conn.execute("PRAGMA optimize")
@@ -577,7 +551,7 @@ def main(argv=None) -> int:
         if getattr(args, "needs_db", False):
             from .db import Database
 
-            database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+            database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
             conn = database.connect()
             try:
                 return args.func(args, config, conn) or 0

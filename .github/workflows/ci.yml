@@ -24,8 +24,3 @@ jobs:
         run: |
           make install DESTDIR="${RUNNER_TEMP}/mailut-root" PYTHON=python3
           find "${RUNNER_TEMP}/mailut-root" -type f | sort
-      - name: Release artifact
-        if: matrix.python-version == '3.11'
-        run: |
-          make dist PYTHON=python3
-          cat dist/SHA256SUMS

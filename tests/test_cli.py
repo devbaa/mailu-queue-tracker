@@ -30,9 +30,10 @@ class HelpTests(MailutTestCase):
     def test_top_level_help(self):
         proc = self.run_cli("--help", expect=0)
         for command in ("audit", "queue", "ips", "report", "watch", "status",
-                        "upgrade", "uninstall", "version"):
+                        "uninstall", "version"):
             self.assertIn(command, proc.stdout)
         self.assertIn("Exit status:", proc.stdout)
+        self.assertNotIn("upgrade", proc.stdout)
 
     def test_help_command_matches_help_flag(self):
         self.assertEqual(self.run_cli("help", expect=0).stdout, self.run_cli("--help", expect=0).stdout)
@@ -48,7 +49,6 @@ class HelpTests(MailutTestCase):
             ("queue", "--help"),
             ("queue", "drain", "--help"),
             ("ips", "--help"),
-            ("upgrade", "--help"),
             ("uninstall", "--help"),
         ):
             proc = self.run_cli(*args, expect=0)

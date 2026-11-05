@@ -149,7 +149,7 @@ def cmd_watch(args, config) -> int:
     if args.print_only:
         return 1 if record["queue_error"] else 0
 
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     conn = database.connect()
     try:
         expires = utcnow() + _dt.timedelta(days=config.get("watch", "retention_days"))
@@ -184,7 +184,7 @@ def cmd_watch(args, config) -> int:
 
 
 def cmd_report(args, config) -> int:
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     conn = database.connect()
     try:
         since = to_iso(utcnow() - parse_duration(args.since))

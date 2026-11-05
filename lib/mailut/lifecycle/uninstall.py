@@ -21,7 +21,6 @@ from .. import payloads as payload_store
 from .. import release, systemd
 from ..db import Database, schema_version
 from ..util import AbortedError, MailutError, confirm, human_bytes, sanitize
-from .lock import LifecycleLock
 from .manifest import Manifest
 
 # Removal order: files first, then the directories that held them.
@@ -51,7 +50,7 @@ def data_summary(config) -> dict:
         "backups": 0,
         "error": None,
     }
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     summary["database_bytes"] = database.size_bytes()
     if config.backup_dir.is_dir():
         try:
@@ -214,8 +213,7 @@ def cmd_uninstall(args, config) -> int:
     ):
         raise AbortedError("aborted: nothing was removed")
 
-    with LifecycleLock(config.run_dir):
-        return _execute(plan, config, manifest)
+    return _execute(plan, config, manifest)
 
 
 def _execute(plan: dict, config, manifest: Manifest) -> int:

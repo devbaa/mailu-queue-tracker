@@ -22,9 +22,10 @@ class Database:
     no command has to remember to initialise anything.
     """
 
-    def __init__(self, path, busy_timeout_ms: int = 5000):
+    def __init__(self, path, busy_timeout_ms: int = 5000, backup_dir=None):
         self.path = Path(path)
         self.busy_timeout_ms = int(busy_timeout_ms)
+        self.backup_dir = Path(backup_dir) if backup_dir else self.path.parent / "backups"
 
     # -- connecting ----------------------------------------------------------
     def connect(self, *, create: bool = True, migrate: bool = True) -> sqlite3.Connection:
@@ -51,7 +52,7 @@ class Database:
         conn.execute("PRAGMA synchronous = NORMAL")
         self._restrict(conn)
         if migrate:
-            migrate_database(conn)
+            migrate_database(conn, backup_dir=self.backup_dir)
         return conn
 
     def open_readonly(self) -> sqlite3.Connection:
@@ -106,8 +107,16 @@ def schema_version(conn: sqlite3.Connection) -> int:
     return int(row["v"] or 0)
 
 
-def migrate_database(conn: sqlite3.Connection) -> tuple[int, int]:
-    """Apply outstanding migrations.  Returns ``(from_version, to_version)``."""
+def migrate_database(conn: sqlite3.Connection, backup_dir=None) -> tuple[int, int]:
+    """Apply outstanding migrations.  Returns ``(from_version, to_version)``.
+
+    Upgrading is ``git pull && make install``, and the first command to open
+    the database afterwards migrates it.  So before changing the schema of a
+    database that already holds data, take a copy into ``backup_dir`` (by
+    default ``backups/`` next to the database).  A failed migration then
+    leaves something to go back to; a migration that is not needed costs
+    nothing.
+    """
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -123,6 +132,9 @@ def migrate_database(conn: sqlite3.Connection) -> tuple[int, int]:
             f"database schema version {current} is newer than this build supports "
             f"({migrations.LATEST}); install a newer {'mailut'} release"
         )
+    if 0 < current < migrations.LATEST and backup_dir is not None:
+        stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
+        backup(conn, Path(backup_dir) / f"mailut-schema{current}-{stamp}.sqlite3")
     for version, description, statements in migrations.MIGRATIONS:
         if version <= current:
             continue

@@ -15,7 +15,7 @@ lib/mailut/
   migrations.py            schema, as an ordered, versioned list
   scopes.py                collection scopes and precedence
   events.py                the event model, classification, fingerprint, storage
-  payloads.py              message storage (unused: no source supplies content)
+  payloads.py              clean-up of stored payloads (none are written)
   query.py                 audit show / stats
   purge.py                 audit purge
   collector.py             the daemon: polls the antispam and smtp logs
@@ -27,7 +27,7 @@ lib/mailut/
   watch.py                 watch sampling and report
   status.py                status and doctor
   systemd.py               read-mostly systemctl wrapper
-  lifecycle/               manifest, lock, upstream, archive, upgrade, uninstall
+  lifecycle/               install manifest, uninstall
 tools/                     build-time helpers (buildinfo, install manifest)
 ```
 
@@ -116,9 +116,11 @@ transaction per migration, and records it in `schema_migrations`. A database
 newer than the running build is refused rather than used.
 
 Adding one: append an entry, bump `release.SCHEMA_VERSION`, never edit a
-released entry. `make dist` writes `SCHEMA_VERSION` into the release tarball so
-`mailut upgrade` can tell whether a schema change is coming *before* installing
-anything, and take a backup only when one is.
+released entry. Upgrading is `git pull && make install`, so the first command to
+open the database after a pull is what migrates it; before changing the schema
+of a database that already holds data it takes a copy into `backups/` with
+SQLite's backup API. A brand-new database, or one already current, is never
+copied.
 
 ## Performance
 
@@ -149,14 +151,9 @@ It records path, type, mode and SHA-256 for each file, plus the owned units, the
 owned directories and the *preserved* (mutable) paths, which are deliberately
 not part of it.
 
-`mailut upgrade` discovers a release over public HTTPS, verifies the tarball
-against the release's own `SHA256SUMS`, validates the unpacked tree, and then
-delegates installation to that tree's `make install` — so remote upgrade and
-`sudo make install` cannot implement different semantics. `mailut uninstall`
-works from the manifest alone and needs no network at all.
-
-`/run/mailut/lifecycle.lock` (an `flock`, not a PID file) serialises upgrade,
-uninstall and schema migration.
+There is no self-upgrade: re-running `make install` from a newer checkout is
+the upgrade. `mailut uninstall` works from the manifest alone and needs no
+network and no checkout.
 
 ## Deliberate non-goals
 

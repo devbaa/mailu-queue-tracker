@@ -1,1 +1,1 @@
-"""Application lifecycle: version, upgrade and uninstall."""
+"""Application lifecycle: version and uninstall."""

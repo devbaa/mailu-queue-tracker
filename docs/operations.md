@@ -52,7 +52,6 @@ exit 3 rather than assuming consent.
 | 2 | invalid command line or argument |
 | 3 | a destructive action was not confirmed |
 | 4 | a verification or doctor check failed |
-| 5 | another lifecycle operation holds the lock |
 
 Useful in cron and monitoring: `mailut doctor || alert`.
 
@@ -92,82 +91,30 @@ the space back.
 
 ## Upgrading
 
-### From public releases
+Upgrade from the checkout you installed from:
 
 ```bash
-mailut upgrade --check          # no root, no changes
-sudo mailut upgrade
-sudo mailut upgrade --dry-run
-sudo mailut upgrade --version 1.1.0
-sudo mailut upgrade --verbose
-```
-
-What happens:
-
-1. take the lifecycle lock (`/run/mailut/lifecycle.lock`);
-2. ask GitHub for the release — public HTTPS, no account or token, one metadata
-   request in the normal case;
-3. download the tarball and `SHA256SUMS` into a private temporary directory;
-4. **verify the SHA-256** — a mismatch aborts, and there is no option to ignore
-   it;
-5. unpack and validate the tree in temporary storage (path traversal, absolute
-   paths, escaping links and device entries are all refused);
-6. if the release changes the database schema: stop `mailut-audit.service` and
-   take a SQLite backup using SQLite's own backup API (not `cp`, which can tear
-   a live WAL database) into `/var/lib/mailut/backups/`;
-7. install by running the new release's `make install`;
-8. migrate the schema, verify it opened at the expected version;
-9. `systemctl daemon-reload`, restart what was running before, leave disabled
-   units disabled;
-10. verify `mailut --version`, that the configuration still parses, that the
-    manifest matches and that the collector is running if it was;
-11. release the lock.
-
-```
-mailut 1.0.0 -> 1.1.0
-
-Downloading release...
-Checksum verified.
-Installing...
-Database schema: 1 -> 2
-Restarting mailut-audit.service...
-Upgrade complete.
-```
-
-Notes:
-
-- Prereleases (alpha/beta/rc/draft) are never installed by an ordinary upgrade;
-  `--prerelease` opts in.
-- Downgrades are refused unless `--allow-downgrade` is given. Application files
-  can be replaced; a database schema generally cannot be moved backwards, so if
-  that is not explicitly supported the downgrade is refused rather than risked.
-- `--version` accepts a version, never a URL. Arbitrary remote code locations
-  are not reachable through it.
-- If installed application files have local modifications, upgrade lists them
-  and asks before replacing them (`--yes` for automation).
-- `/etc/mailut/mailut.conf` and everything under `/var/lib/mailut` are always
-  preserved. `/var/lib/mailut` is never deleted and rebuilt.
-- If migration fails, the collector is left stopped (running new code against
-  an old schema is worse than downtime), the backup path and schema version are
-  printed, and the command exits non-zero. No rollback is claimed, because none
-  was performed.
-- `mailut upgrade` needs `make` on the host. It never pipes a download into a
-  shell.
-- Normal commands (`status`, `audit show`, `queue list`, …) never contact
-  GitHub. There is no automatic update check.
-- `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` are honoured; proxy credentials are
-  never stored.
-
-### From source
-
-```bash
+cd /path/to/mailu-queue-tracker
 git pull
 make test
 sudo make install
+sudo systemctl restart mailut-audit.service
 ```
 
-Equivalent, and it goes through the same install and migration path. Remote
-upgrade is a convenience, not the only safe way to install a release.
+`make install` replaces the program, library, man pages and units, reloads
+systemd, and never touches `/etc/mailut/mailut.conf` or anything under
+`/var/lib/mailut`. Enabled units stay enabled; nothing is enabled for you.
+
+If the new version changes the database schema, the first command to open the
+database migrates it — normally the restarted collector. Before changing the
+schema of a database that already holds data, it copies it into
+`/var/lib/mailut/backups/mailut-schema<N>-<time>.sqlite3` using SQLite's backup
+API. If a migration fails, that copy is what you go back to. A schema the
+installed version does not know (from a newer checkout) is refused rather
+than guessed at.
+
+There is no `mailut upgrade` and no automatic update check: `mailut` never
+contacts GitHub.
 
 ## Uninstalling
 
@@ -228,54 +175,9 @@ Worth backing up:
 - `/etc/mailut/mailut.conf`
 - `/var/lib/mailut/mailut.sqlite3` — take it with SQLite's backup API or
   `sqlite3 ... ".backup"`, not `cp`, while the collector is running
-- `/var/lib/mailut/messages/` if you retain complete messages
 
-`/var/lib/mailut/backups/` holds the pre-migration copies upgrade takes; prune
-old ones yourself.
-
-## Making a release (maintainers)
-
-```bash
-# 1. Update the version.
-echo 1.1.0 > VERSION
-$EDITOR man/mailut.8 man/mailut.conf.5     # .TH version strings
-
-# 2. Check.
-make test
-make check
-
-# 3. Verify a staged install.
-rm -rf /tmp/mailut-root
-make install DESTDIR=/tmp/mailut-root
-find /tmp/mailut-root -type f
-
-# 4. Build deterministic artifacts.
-make dist
-#    -> dist/mailut-1.1.0.tar.gz
-#    -> dist/SHA256SUMS
-
-# 5. Tag and publish.
-git commit -am "Release 1.1.0"
-git tag -a v1.1.0 -m "Mailu Tools 1.1.0"
-git push --follow-tags
-
-# 6. Create the GitHub release for tag v1.1.0 and upload BOTH
-#    dist/mailut-1.1.0.tar.gz and dist/SHA256SUMS.
-```
-
-`make dist` builds from `git ls-files`, so `.git/`, test scratch files, local
-configuration, databases and mail payloads cannot end up in the artifact. The
-archive is built with fixed ownership and timestamps, so the same commit
-produces the same bytes. It also writes `SCHEMA_VERSION` into the tree, which is
-how `mailut upgrade` knows whether a schema change is coming before it installs
-anything.
-
-Both assets are required: `mailut upgrade` refuses a release with no
-`SHA256SUMS` rather than installing something it cannot verify. The names must
-be `mailut-<version>.tar.gz` and `SHA256SUMS`.
-
-If release signing is added later, it layers on top of the existing
-metadata/checksum step; nothing about the upgrade flow needs redesigning.
+`/var/lib/mailut/backups/` holds the copies taken before each schema migration;
+prune old ones yourself.
 
 ## Migrating from mailu-queue-tracker
 

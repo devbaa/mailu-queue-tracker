@@ -3,14 +3,13 @@
 This module is the single place that knows
 
   * the product / command names,
-  * the canonical public upstream repository,
+  * the canonical public upstream repository (for --help),
   * how to find the version of the *installed* application, and
   * the filesystem layout the application was installed with.
 
-Everything the lifecycle commands (``mailut version``, ``mailut upgrade``,
-``mailut uninstall``) need must be answerable from here without a git
-checkout, without network access and without the directory ``make install``
-was originally run from.
+Everything ``mailut version`` and ``mailut uninstall`` need must be answerable
+from here without a git checkout, without network access and without the
+directory ``make install`` was originally run from.
 
 ``make install`` writes ``buildinfo.json`` next to this file; that file is the
 authoritative source once installed.  In a source checkout we fall back to the
@@ -32,18 +31,6 @@ COMMAND_NAME = "mailut"
 UPSTREAM_OWNER = "devbaa"
 UPSTREAM_REPO = "mailu-queue-tracker"
 UPSTREAM_URL = f"https://github.com/{UPSTREAM_OWNER}/{UPSTREAM_REPO}"
-UPSTREAM_API = f"https://api.github.com/repos/{UPSTREAM_OWNER}/{UPSTREAM_REPO}"
-
-# Testing aid: the release API can be redirected, but only together with
-# MAILUT_ROOT — that is, only for an installation staged under a throwaway
-# root. On a real installation this is ignored, so no environment variable can
-# point an upgrade at a different upstream.
-if os.environ.get("MAILUT_ROOT") and os.environ.get("MAILUT_UPSTREAM_API"):
-    UPSTREAM_API = os.environ["MAILUT_UPSTREAM_API"]
-
-# Release artifacts published with every GitHub release.
-RELEASE_TARBALL_TEMPLATE = "mailut-{version}.tar.gz"
-RELEASE_CHECKSUM_ASSET = "SHA256SUMS"
 
 # Bumped whenever the SQLite schema changes; see mailut.migrations.
 SCHEMA_VERSION = 1
@@ -153,7 +140,7 @@ def staged_root() -> str | None:
 
     ``MAILUT_ROOT`` re-bases *every* layout path, so a process running under it
     cannot reach the real installation at all.  The test suite uses it to
-    exercise upgrade and uninstall without touching the filesystem; it is
+    exercise install and uninstall without touching the filesystem; it is
     documented in mailut(8) as a testing aid only.
     """
     return os.environ.get("MAILUT_ROOT") or None

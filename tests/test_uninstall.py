@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fakehub import FakeHub
 from helpers import ROOT
 
 from mailut.lifecycle.manifest import Manifest
@@ -56,9 +55,9 @@ class UninstallTests(unittest.TestCase):
             "MAILUT_NO_SYSTEMD": "1",
         }
         if not network:
-            # Point the upstream API at a dead address: any attempt to use the
-            # network during uninstall would hang or fail loudly.
-            env["MAILUT_UPSTREAM_API"] = "http://127.0.0.1:1"
+            # Send any HTTP(S) through a dead proxy: an attempt to use the
+            # network during uninstall would fail loudly.
+            env["HTTPS_PROXY"] = env["HTTP_PROXY"] = "http://127.0.0.1:1"
         proc = subprocess.run(
             [sys.executable, str(self.command), *args],
             capture_output=True, text=True, timeout=180, env=env, check=False,
@@ -353,6 +352,3 @@ class UninstallUnitTests(unittest.TestCase):
             Manifest.load(path)
         self.assertIn("unsupported version", str(caught.exception))
 
-    def test_fakehub_is_only_used_by_the_upgrade_tests(self):
-        """Uninstall must never need an upstream at all."""
-        self.assertTrue(hasattr(FakeHub, "publish_tree"))

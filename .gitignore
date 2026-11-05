@@ -1,5 +1,4 @@
 # Build and release artifacts
-dist/
 __pycache__/
 *.pyc
 

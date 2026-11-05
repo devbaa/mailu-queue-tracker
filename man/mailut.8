@@ -79,7 +79,6 @@ mailut
 \(em\(em audit add    all | domain <d> | email <e>
 \(em\(em audit remove all | domain <d> | email <e>
 \(em\(em audit scopes | show | stats | purge | doctor | collect | ingest
-\(em\(em upgrade                   install a newer public release
 \(em\(em uninstall                 remove the application
 .fi
 .SH AUDIT COMMANDS
@@ -397,67 +396,25 @@ or
 .RI ` "mailut 1.0.0 (a1b2c3d)" '.
 This works without git and without the source checkout.
 .B \-\-json
-additionally reports the database schema version this build expects, which is
-how
-.B mailut upgrade
-verifies a migration: the upgrading process still has the outgoing release
-loaded and must not judge the incoming one by its own constants.
+additionally reports the database schema version this build expects.
 .TP
-.B mailut upgrade
-Install a newer release from the project's public GitHub releases. No GitHub
-account, token,
-.B gh
-command or SSH key is required, and the original clone may have been deleted.
-Options:
-.RS
-.TP
-.B \-\-check
-Report installed and latest versions and exit. Contacts GitHub, changes
-nothing, and does not require root. "Already current" is a success, not an
-error.
-.TP
-.BR \-n ", " \-\-dry\-run
-Describe what would be done without touching installed files, configuration,
-the database, systemd or Mailu.
-.TP
-.BI \-\-version " X.Y.Z"
-Install a specific published release. Only a version is accepted, never a URL.
-.TP
-.B \-\-allow\-downgrade
-Permit installing an older release. Refused by default.
-.TP
-.B \-\-prerelease
-Consider prereleases. Ignored by default: alpha, beta, rc and draft releases
-are never installed by an ordinary upgrade.
-.TP
-.BR \-y ", " \-\-yes
-Do not prompt. Needed for automated deployment when installed application files
-have local modifications.
-.TP
-.B \-\-verbose
-Show transfer and installation detail.
-.RE
+.B Upgrading
+There is no upgrade command. Upgrade from the checkout you installed from:
 .IP
-The sequence is: acquire the lifecycle lock; discover the release; download the
-tarball and its
-.B SHA256SUMS
-into a private temporary directory; verify the SHA-256 (a mismatch is fatal and
-cannot be overridden); unpack and validate the tree; stop the collector and
-back up the database
-.I only
-when the schema changes; install; migrate; reload systemd; restore the previous
-unit run state; verify; release the lock. Nothing from the network is executed
-before it has been verified, and the application is never installed by piping a
-download into a shell.
+.nf
+    git pull
+    sudo make install
+    sudo systemctl restart mailut\-audit.service
+.fi
 .IP
-Configuration and audit data are always preserved.
+.B make install
+never overwrites the configuration or anything under
+.IR /var/lib/mailut .
+If the new version changes the database schema, the first command to open the
+database migrates it, after copying a database that already holds data into
+.IR /var/lib/mailut/backups/ .
 .B mailut
-requires the
-.B make
-utility on the host to install a release; installation itself is performed by
-the new release's own
-.BR "make install" ,
-so upgrading and installing from source cannot drift apart.
+never contacts GitHub.
 .TP
 .B mailut uninstall
 Remove the application using its own install manifest. Entirely local: no
@@ -534,24 +491,17 @@ Application library.
 Example configuration and the install manifest.
 .TP
 .I /usr/local/share/mailut/install-manifest.json
-The authoritative list of files this release owns; used by upgrade and
-uninstall.
+The authoritative list of files this installation owns; used by uninstall.
 .TP
 .I /etc/mailut/mailut.conf
-Configuration. Never overwritten by an install or an upgrade. See
+Configuration. Never overwritten by a re-install. See
 .BR mailut.conf (5).
 .TP
 .I /var/lib/mailut/mailut.sqlite3
 Audit database, mode 0600.
 .TP
-.I /var/lib/mailut/messages/
-Stored raw messages, mode 0700.
-.TP
 .I /var/lib/mailut/backups/
-Database backups taken before a schema migration.
-.TP
-.I /run/mailut/lifecycle.lock
-Lock serialising upgrade, uninstall and schema migration.
+Copies of the database taken before a schema migration, mode 0600.
 .TP
 .I /etc/systemd/system/mailut-*.service, mailut-*.timer
 Units owned by this application.
@@ -566,28 +516,13 @@ Directory containing the
 .B mailut
 Python package. Only needed when running from an unusual location.
 .TP
-.B HTTPS_PROXY, HTTP_PROXY, NO_PROXY
-Honoured by
-.B mailut upgrade
-through the standard library HTTP client. Proxy credentials are never stored.
-.TP
 .B MAILUT_ROOT
 Re-bases every installed path under one directory, so the process cannot reach
 the real installation at all. Because nothing privileged is then in reach, the
 root requirement of
-.B upgrade
-and
 .B uninstall
 does not apply under it. A testing aid used by the test suite for staged
 installs; do not set it on a real system.
-.TP
-.B MAILUT_UPSTREAM_API
-Redirects release discovery. Honoured
-.B only
-when
-.B MAILUT_ROOT
-is also set, so it applies to a staged test installation and can never point a
-real installation's upgrade at a different upstream.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -604,12 +539,9 @@ A destructive action was not confirmed.
 .TP
 .B 4
 A verification or doctor check failed.
-.TP
-.B 5
-Another lifecycle operation holds the lock.
 .SH SECURITY CONSIDERATIONS
-Mail metadata is sensitive. The database and the message store are mode 0600
-and 0700 and owned by root.
+Mail metadata is sensitive. The database is mode 0600 inside a 0700 state
+directory, owned by root.
 .PP
 The collector opens no network socket. It only reads Mailu's container logs
 through the Docker socket, as
@@ -686,11 +618,11 @@ Preview and then run a retention purge:
     mailut audit purge --expired --yes
 .fi
 .PP
-Upgrade:
+Upgrade from the checkout:
 .PP
 .nf
-    mailut upgrade --check
-    sudo mailut upgrade
+    git pull && sudo make install
+    sudo systemctl restart mailut\-audit.service
 .fi
 .SH SEE ALSO
 .BR mailut.conf (5),

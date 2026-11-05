@@ -13,45 +13,40 @@ than a public issue.
 ## Untrusted input
 
 Everything ingested is chosen by a remote party: envelope senders and
-recipients, HELO names, subjects, Message-IDs, Rspamd symbol options and
-Postfix rejection text.
+recipients, HELO names, Message-IDs, Rspamd symbol options and Postfix
+rejection text.
 
 - **Never in a shell.** Every external program — `docker compose`, `postqueue`,
   `postsuper` — is run as an argument vector through `subprocess`, with no
   shell, no string interpolation and no `eval`. `postsuper` receives queue ids
   on stdin. The configuration file is parsed as INI and is never sourced or
   executed.
-- **Never in a path.** Stored messages are written to generated filenames under
-  a date hierarchy; nothing derived from a subject, sender or header ever forms
-  a path component, and every write and delete is checked to stay inside the
-  configured message directory.
+- **Never in a path.** Nothing derived from ingested text ever forms a path
+  component. Message content is never stored at all.
 - **Never in SQL.** Every statement is parameterised. No query is assembled from
   a value; the only interpolation is a placeholder count.
 - **Escaped before printing.** Human output passes untrusted strings through a
   sanitiser that escapes C0/C1 control characters and collapses newlines, so a
-  crafted subject cannot rewrite a terminal or forge a line of output.
-- **Bounded.** The HTTP collector enforces a `Content-Length` limit, a record
-  count per request and a stored-message size limit. Malformed JSON and bad
-  base64 are 400s; an unparseable log line is counted and skipped, never fatal.
+  crafted value cannot rewrite a terminal or forge a line of output.
+- **Never fatal.** An unparseable log line is counted and skipped; the parsers
+  return nothing rather than raise.
 
 ## The collector
 
-The collector is **unauthenticated** and binds to `127.0.0.1` by default. It is
-meant to be reachable only by the Rspamd container on the same host.
-
-Binding it anywhere else requires `--allow-remote` and is reported as a warning
-by `mailut doctor`. Do not expose it; there is no authentication to configure,
-by design — access control is the host's firewall and the Docker network.
+The collector opens no network socket. It reads the Mailu antispam and smtp
+container logs through the Docker socket, as `docker compose logs` does, so
+there is no endpoint to expose, authenticate or firewall, and nothing another
+process could post fabricated evidence to. It changes no Mailu or Rspamd
+configuration.
 
 ## Stored data
 
-- The database is mode 0600, the state and message directories 0700, owned by
-  root. `mailut doctor` warns if anything is looser.
-- Complete message retention is **disabled by default** and must be enabled
-  deliberately in `/etc/mailut/mailut.conf`. A scope cannot ask for a level the
-  host forbids, and a request for one fails rather than being downgraded.
-- Retained bodies are never printed by ordinary output; `mailut audit show` only
-  reports that a payload exists.
+- The database is mode 0600 and the state directory 0700, owned by root.
+  Copies taken before a schema migration have the same modes. `mailut doctor`
+  warns if anything is looser.
+- Only metadata is collected. No body or header set is ever stored, because
+  the logs that are read contain none, and a scope asking for more is refused
+  rather than accepted and downgraded.
 - Every record carries an expiry, and the daily purge enforces it. Retention is
   a deletion guarantee, not a suggestion.
 - `/etc/mailut/mailut.conf` is installed 0640. It holds no secrets by design:
@@ -69,26 +64,13 @@ that is compatible with it (`NoNewPrivileges`, `PrivateTmp`,
 directives that would silently stop collection. `mailut-purge.service` touches
 no network and adds `PrivateNetwork=yes`.
 
-Commands that modify the system (`upgrade`, `uninstall`) check for root up
-front, before downloading or deleting anything.
+`mailut uninstall` checks for root up front, before deleting anything.
 
 ## Upgrades
 
-- Release metadata and artifacts come from the project's public GitHub releases
-  over HTTPS. No token, account, `gh` CLI or SSH key is involved.
-- The tarball's SHA-256 is checked against the release's own `SHA256SUMS`. A
-  mismatch aborts the upgrade, and there is deliberately no flag to ignore it.
-  A release with no `SHA256SUMS` is refused.
-- Nothing from the network is executed before verification, and nothing is ever
-  piped from a download into a shell.
-- Archives are validated member by member before extraction: absolute paths,
-  `..` traversal, links escaping the extraction directory and device/fifo
-  entries are all refused, and the tree is only inspected in a private
-  temporary directory.
-- `--version` takes a version, never a URL, so it cannot be pointed at an
-  arbitrary remote location.
-- `/run/mailut/lifecycle.lock` (an `flock`, not a PID file) prevents concurrent
-  upgrade, uninstall or migration.
+There is no self-upgrade. Upgrading is `git pull && sudo make install` from a
+checkout you control, so `mailut` never downloads, unpacks or runs anything
+from the network, and never contacts GitHub at all.
 
 ## Destructive operations
 

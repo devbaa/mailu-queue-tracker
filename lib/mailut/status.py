@@ -35,7 +35,7 @@ OK, WARN, FAIL = "ok", "warn", "fail"
 
 
 def _db_snapshot(config) -> dict:
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     info = {
         "path": str(config.database),
         "exists": config.database.exists(),
@@ -186,7 +186,7 @@ def collect_checks(config) -> list[dict]:
     else:
         _check(results, "state directory", WARN, f"{state_dir} does not exist yet")
 
-    database = Database(config.database, config.get("storage", "busy_timeout_ms"))
+    database = Database(config.database, config.get("storage", "busy_timeout_ms"), config.backup_dir)
     if config.database.exists():
         try:
             conn = database.open_readonly()

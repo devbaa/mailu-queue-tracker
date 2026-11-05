@@ -13,7 +13,6 @@ EXIT_FAILURE = 1  # operational / runtime failure
 EXIT_USAGE = 2  # invalid command line
 EXIT_ABORTED = 3  # the operator declined a destructive action
 EXIT_CHECK_FAILED = 4  # a verification/doctor check failed
-EXIT_LOCKED = 5  # another lifecycle operation holds the lock
 
 UTC = _dt.timezone.utc
 
@@ -34,12 +33,6 @@ class AbortedError(MailutError):
     """The operator did not confirm a destructive action (exit 3)."""
 
     exit_code = EXIT_ABORTED
-
-
-class LockedError(MailutError):
-    """Another lifecycle operation is running (exit 5)."""
-
-    exit_code = EXIT_LOCKED
 
 
 # --- time -------------------------------------------------------------------

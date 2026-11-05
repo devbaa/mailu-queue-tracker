@@ -107,3 +107,60 @@ class DatabaseTests(MailutTestCase):
         config = self.config()
         database = Database(config.database)
         self.assertGreater(database.size_bytes(), os.path.getsize(config.database) - 1)
+
+
+class MigrationBackupTests(MailutTestCase):
+    """Upgrading is `git pull && make install`; the database is migrated by the
+    first command that opens it, so that is where the copy has to be taken."""
+
+    def _future_schema(self):
+        """Pretend this build adds one more migration."""
+        extra = (migrations.LATEST + 1, "test-only column", (
+            "ALTER TABLE audit_scopes ADD COLUMN test_only INTEGER",
+        ))
+        real = (migrations.MIGRATIONS, migrations.LATEST)
+        migrations.MIGRATIONS = [*migrations.MIGRATIONS, extra]
+        migrations.LATEST = extra[0]
+        self.addCleanup(setattr, migrations, "MIGRATIONS", real[0])
+        self.addCleanup(setattr, migrations, "LATEST", real[1])
+
+    def backups(self):
+        directory = self.config().backup_dir
+        return sorted(directory.glob("*.sqlite3")) if directory.is_dir() else []
+
+    def test_an_existing_database_is_copied_before_its_schema_changes(self):
+        conn = self.db()
+        conn.execute(
+            "INSERT INTO audit_scopes (scope_type, scope_value, mode, level, retention_days, "
+            "created_at, updated_at) VALUES ('all', '*', 'include', 'metadata', 30, 't', 't')"
+        )
+        conn.close()
+        self._conn = None
+        before = migrations.LATEST
+
+        self._future_schema()
+        config = self.config()
+        upgraded = Database(config.database, 5000, config.backup_dir).connect()
+        upgraded.close()
+
+        copies = self.backups()
+        self.assertEqual(len(copies), 1)
+        self.assertIn(f"schema{before}", copies[0].name)
+        self.assertEqual(stat.S_IMODE(copies[0].stat().st_mode), 0o600)
+        old = sqlite3.connect(str(copies[0]))
+        self.addCleanup(old.close)
+        old.row_factory = sqlite3.Row
+        self.assertEqual(schema_version(old), before)
+        self.assertEqual(old.execute("SELECT COUNT(*) FROM audit_scopes").fetchone()[0], 1)
+
+    def test_no_copy_when_nothing_changes(self):
+        self.db().close()
+        self._conn = None
+        config = self.config()
+        Database(config.database, 5000, config.backup_dir).connect().close()
+        self.assertEqual(self.backups(), [])
+
+    def test_no_copy_of_a_brand_new_database(self):
+        self._future_schema()
+        self.db()
+        self.assertEqual(self.backups(), [])

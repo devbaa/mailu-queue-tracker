@@ -151,23 +151,23 @@ server's records only establish what this server observed.
 
 ## Upgrade and remove
 
-```bash
-mailut upgrade --check
-sudo mailut upgrade
-sudo mailut upgrade --version 1.1.0
-sudo mailut upgrade --dry-run
+Upgrade from your checkout; configuration and audit data are kept, and the
+database is copied before any schema change:
 
+```bash
+git pull && sudo make install && sudo systemctl restart mailut-audit.service
+```
+
+Remove:
+
+```bash
 sudo mailut uninstall                  # keeps config and audit data
 sudo mailut uninstall --remove-config
 sudo mailut uninstall --remove-data    # deletes retained mail evidence
 sudo mailut uninstall --purge          # == --remove-config --remove-data
 ```
 
-Upgrades come from this project's public GitHub releases. No GitHub account or
-token is needed, the release tarball's SHA-256 is always verified, and the
-original clone is not required — delete it after installing if you like.
-Ordinary uninstall preserves `/etc/mailut` and `/var/lib/mailut`.
-
+Uninstall works from the install manifest, offline, and without the checkout.
 See [docs/operations.md](docs/operations.md).
 
 ## Layout
@@ -175,13 +175,12 @@ See [docs/operations.md](docs/operations.md).
 ```
 /usr/local/sbin/mailut                     command
 /usr/local/lib/mailut/                     application library
-/usr/local/share/mailut/                   example config, Rspamd snippet, manifest
+/usr/local/share/mailut/                   example config, install manifest
 /usr/local/share/man/man8/mailut.8         manual
 /usr/local/share/man/man5/mailut.conf.5    configuration manual
 /etc/mailut/mailut.conf                    configuration
 /var/lib/mailut/mailut.sqlite3             audit database (0600)
-/var/lib/mailut/messages/                  stored messages, if enabled (0700)
-/run/mailut/                               lifecycle lock
+/var/lib/mailut/backups/                   copies taken before schema migrations
 ```
 
 ## Tests
@@ -193,10 +192,10 @@ make check    # byte-compile, unit files, man pages
 
 ## Documentation
 
-- [docs/install.md](docs/install.md) — installation, Rspamd wiring, systemd
-- [docs/audit.md](docs/audit.md) — scopes, levels, retention, querying
+- [docs/install.md](docs/install.md) — installation, what the collector reads, systemd
+- [docs/audit.md](docs/audit.md) — scopes, retention, querying
 - [docs/architecture.md](docs/architecture.md) — how it is put together
-- [docs/operations.md](docs/operations.md) — day-to-day, upgrade, uninstall, releases
+- [docs/operations.md](docs/operations.md) — day-to-day, upgrading, uninstall
 - [SECURITY.md](SECURITY.md) — threat model and handling of untrusted data
 
 `man 8 mailut` and `man 5 mailut.conf` are the reference.

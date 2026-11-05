@@ -39,10 +39,11 @@ The configuration file is not a database.
 An example with every default is installed at
 .IR /usr/local/share/mailut/mailut.conf.example .
 .B make install
-and
-.B mailut upgrade
-never overwrite an existing
-.IR /etc/mailut/mailut.conf .
+never overwrites an existing
+.IR /etc/mailut/mailut.conf ,
+so re-running it after
+.B git pull
+keeps your settings.
 Keep the file mode 0640 or stricter.
 .PP
 Validate it at any time with

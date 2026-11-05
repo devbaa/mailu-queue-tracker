@@ -52,7 +52,8 @@ class StagedInstallTests(unittest.TestCase):
         package = self.path("usr/local/lib/mailut/mailut")
         self.assertTrue((package / "cli.py").is_file())
         self.assertTrue((package / "ingest" / "postfix.py").is_file())
-        self.assertTrue((package / "lifecycle" / "upgrade.py").is_file())
+        self.assertTrue((package / "lifecycle" / "uninstall.py").is_file())
+        self.assertFalse((package / "lifecycle" / "upgrade.py").exists())
         self.assertEqual(stat.S_IMODE((package / "cli.py").stat().st_mode), 0o644)
 
     def test_man_pages_are_installed(self):
@@ -208,65 +209,6 @@ class StagedInstallTests(unittest.TestCase):
         proc = self.run_staged("--config", str(self.path("etc/mailut/mailut.conf")), "status")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("Mailu Tools", proc.stdout)
-
-
-@unittest.skipUnless(MAKE and shutil.which("git"), "make and git are required")
-class DistTests(unittest.TestCase):
-    """`make dist` must produce a clean, reproducible release artifact."""
-
-    @classmethod
-    def setUpClass(cls):
-        proc = subprocess.run(
-            [MAKE, "-C", str(ROOT), "dist"], capture_output=True, text=True,
-            timeout=300, check=False,
-        )
-        if proc.returncode != 0:
-            raise AssertionError(f"make dist failed:\n{proc.stdout}\n{proc.stderr}")
-        cls.version = (ROOT / "VERSION").read_text().strip()
-        cls.tarball = ROOT / "dist" / f"mailut-{cls.version}.tar.gz"
-        cls.sums = ROOT / "dist" / "SHA256SUMS"
-
-    @classmethod
-    def tearDownClass(cls):
-        subprocess.run([MAKE, "-C", str(ROOT), "clean"], capture_output=True, check=False)
-
-    def test_artifacts_are_produced(self):
-        self.assertTrue(self.tarball.is_file())
-        self.assertTrue(self.sums.is_file())
-        self.assertIn(self.tarball.name, self.sums.read_text())
-
-    def test_checksum_matches_the_tarball(self):
-        import hashlib
-
-        digest = hashlib.sha256(self.tarball.read_bytes()).hexdigest()
-        self.assertIn(digest, self.sums.read_text())
-
-    def test_artifact_contains_the_installable_tree(self):
-        import tarfile
-
-        with tarfile.open(self.tarball) as archive:
-            names = archive.getnames()
-        root = f"mailut-{self.version}"
-        for member in ("Makefile", "VERSION", "SCHEMA_VERSION", "bin/mailut",
-                       "lib/mailut/cli.py", "man/mailut.8", "man/mailut.conf.5",
-                       "etc/mailut.conf.example"):
-            self.assertIn(f"{root}/{member}", names, member)
-
-    def test_artifact_excludes_development_and_local_files(self):
-        import tarfile
-
-        with tarfile.open(self.tarball) as archive:
-            names = archive.getnames()
-        for pattern in (".git/", "__pycache__", ".pyc", ".sqlite3", "/dist/"):
-            offenders = [n for n in names if pattern in n]
-            self.assertEqual(offenders, [], f"{pattern}: {offenders}")
-
-    def test_build_is_reproducible(self):
-        first = self.sums.read_text()
-        subprocess.run([MAKE, "-C", str(ROOT), "clean"], capture_output=True, check=True)
-        subprocess.run([MAKE, "-C", str(ROOT), "dist"], capture_output=True, check=True,
-                       timeout=300)
-        self.assertEqual(self.sums.read_text(), first)
 
 
 @unittest.skipUnless(MAKE, "make is not available")

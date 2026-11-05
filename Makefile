@@ -7,7 +7,6 @@
 #   sudo make enable
 #   sudo make uninstall
 #   make install DESTDIR=/tmp/mailut-root      # staged install, for inspection
-#   make dist                                  # release tarball + SHA256SUMS
 #
 # Conventional variables: PREFIX, DESTDIR, SYSCONFDIR, LOCALSTATEDIR,
 # SYSTEMD_UNIT_DIR.
@@ -36,7 +35,7 @@ INSTALL_PROGRAM := $(INSTALL) -m 0755
 INSTALL_DATA    := $(INSTALL) -m 0644
 
 # Skip `systemctl daemon-reload` for a staged install or when the caller
-# manages the reload itself (mailut upgrade does).
+# manages the reload itself.
 SKIP_DAEMON_RELOAD ?=
 
 PKG_FILES := $(shell find lib/$(PACKAGE) -name '*.py' | sort)
@@ -45,7 +44,7 @@ UNITS     := mailut-audit.service mailut-purge.service mailut-purge.timer \
 
 .PHONY: help test check lint install install-dirs install-bin install-lib \
         install-data install-man install-units install-config manifest \
-        enable disable uninstall dist clean version schema-version
+        enable disable uninstall version
 
 help: ## Show this help
 	@echo "Mailu Tools $(VERSION) -- make targets:"
@@ -58,9 +57,6 @@ help: ## Show this help
 
 version: ## Print the release version
 	@echo $(VERSION)
-
-schema-version: ## Print the SQLite schema version of this release
-	@$(PYTHON) -c "import sys; sys.path.insert(0,'lib'); import mailut.release as r; print(r.SCHEMA_VERSION)"
 
 test: ## Run the test suite (no Mailu server, no network required)
 	@$(PYTHON) tests/run.py
@@ -223,29 +219,3 @@ uninstall: ## Remove installed files; keep /etc/mailut and /var/lib/mailut
 	else \
 	  echo "$(PACKAGE) is not installed at $(DESTDIR)$(SBINDIR)/$(PACKAGE)"; \
 	fi
-
-# ---------------------------------------------------------------------------
-# release
-# ---------------------------------------------------------------------------
-dist: ## Build dist/mailut-$(VERSION).tar.gz and dist/SHA256SUMS
-	@rm -rf dist/$(PACKAGE)-$(VERSION) dist/$(PACKAGE)-$(VERSION).tar.gz
-	@mkdir -p dist/$(PACKAGE)-$(VERSION)
-	@git ls-files -z \
-	  | tar --null --files-from=- -cf - \
-	  | tar -xf - -C dist/$(PACKAGE)-$(VERSION)
-	@$(MAKE) --no-print-directory schema-version > dist/$(PACKAGE)-$(VERSION)/SCHEMA_VERSION
-	@find dist/$(PACKAGE)-$(VERSION) -name '__pycache__' -type d -prune -exec rm -rf {} +
-	@# gzip -n omits the name and timestamp from the header, so the same
-	@# commit always produces the same bytes.
-	@tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2020-01-01' \
-	  --mode='go-w' -cf - -C dist $(PACKAGE)-$(VERSION) \
-	  | gzip -9 -n > dist/$(PACKAGE)-$(VERSION).tar.gz
-	@rm -rf dist/$(PACKAGE)-$(VERSION)
-	@cd dist && sha256sum $(PACKAGE)-$(VERSION).tar.gz > SHA256SUMS
-	@echo "dist/$(PACKAGE)-$(VERSION).tar.gz"
-	@echo "dist/SHA256SUMS"
-	@cat dist/SHA256SUMS
-
-clean: ## Remove build artifacts
-	rm -rf dist
-	find . -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true

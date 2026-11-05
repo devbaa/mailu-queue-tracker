@@ -6,7 +6,7 @@
   and `mailut audit purge --expired --yes` yourself)
 - Python 3.9 or newer — standard library only, no pip packages
 - Docker and Docker Compose, with a working Mailu installation
-- `make` and the `install` utility to install, and for `mailut upgrade`
+- `make` and the `install` utility (on Debian: `apt install make`)
 - root, because reading the Mailu queue and container logs needs the Docker
   socket
 
@@ -29,11 +29,11 @@ sudo make install
 | `/usr/local/share/man/man8/mailut.8` | manual |
 | `/usr/local/share/man/man5/mailut.conf.5` | configuration manual |
 | `/etc/mailut/mailut.conf` | configuration (0640), **only if absent** |
-| `/var/lib/mailut/` | state (0700): database, messages, backups |
+| `/var/lib/mailut/` | state (0700): database, pre-migration backups |
 | `/etc/systemd/system/mailut-*` | units |
 
-An existing `/etc/mailut/mailut.conf` is never overwritten, by an install or an
-upgrade. The shipped example is always refreshed at
+An existing `/etc/mailut/mailut.conf` is never overwritten, by a first install or
+a re-install. The shipped example is always refreshed at
 `/usr/local/share/mailut/mailut.conf.example`, so you can diff against it.
 
 ### Variables
@@ -170,13 +170,13 @@ and schedule the periodic work, for example with cron:
 ## Upgrading
 
 ```bash
-mailut upgrade --check
-sudo mailut upgrade
+git pull
+sudo make install
+sudo systemctl restart mailut-audit.service
 ```
 
-or re-run `sudo make install` from a newer checkout — both preserve
-configuration and data and both go through the same install path. See
-[operations.md](operations.md).
+Configuration and data are preserved, and the database is copied before any
+schema change. See [operations.md](operations.md#upgrading).
 
 ## Removing
 
