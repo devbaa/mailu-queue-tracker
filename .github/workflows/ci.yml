@@ -6,7 +6,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest (26.04) has no Python 3.9 build for setup-python,
+    # and 3.9 is the oldest version mailut supports.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
