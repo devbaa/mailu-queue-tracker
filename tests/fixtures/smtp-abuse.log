@@ -1,0 +1,7 @@
+smtp-1  | 2026-09-17T12:00:00.000000000Z Sep 17 12:00:00 mail postfix/smtpd[111]: 4inc001: client=front[192.168.203.2], sasl_method=PLAIN, sasl_username=noreply@example.com
+smtp-1  | 2026-09-17T12:00:01.000000000Z Sep 17 12:00:01 mail postfix/smtp[112]: 4inc001: to=<victim1@example.org>, status=deferred (host mx.example.org said: 554 5.7.1 Message blocked using Spamhaus)
+smtp-1  | 2026-09-17T12:00:02.000000000Z Sep 17 12:00:02 mail postfix/smtpd[111]: 4inc002: client=front[192.168.203.2], sasl_method=PLAIN, sasl_username=noreply@example.com
+smtp-1  | 2026-09-17T12:00:03.000000000Z Sep 17 12:00:03 mail postfix/smtp[112]: 4inc002: to=<victim2@example.org>, status=deferred (host mx.example.org said: 554 5.7.1 Message blocked using Spamhaus)
+smtp-1  | 2026-09-17T12:00:04.000000000Z Sep 17 12:00:04 mail postfix/smtpd[111]: 4inc003: client=front[192.168.203.2], sasl_method=PLAIN, sasl_username=noreply@example.com
+smtp-1  | 2026-09-17T12:00:05.000000000Z Sep 17 12:00:05 mail postfix/smtp[112]: 4inc003: to=<victim3@example.org>, status=bounced (host mx.example.org said: 550 5.7.1 blacklisted)
+smtp-1  | 2026-09-17T12:00:06.000000000Z Sep 17 12:00:06 mail postfix/smtpd[111]: NOQUEUE: reject: RCPT from front[192.168.203.2]: 450 4.7.1 Error: too many recipients; from=<noreply@example.com> to=<victim4@example.org> proto=ESMTP sasl_username=noreply@example.com

@@ -1,338 +1,189 @@
-# Install, configure, use, update & uninstall
-
-A complete operational guide for `mailu-queue-tracker`. For the *what/why* see
-the [README](../README.md); for tuning see [thresholds.md](thresholds.md); for
-the signals see [signals.md](signals.md).
-
-- [Requirements](#requirements)
-- [Install](#install)
-- [Configure](#configure)
-- [Verify](#verify)
-- [How it works](#how-it-works)
-- [Using it](#using-it)
-- [Schedule without systemd (cron)](#schedule-without-systemd-cron)
-- [Update](#update)
-- [Uninstall](#uninstall)
-- [Troubleshooting](#troubleshooting)
-
----
+# Installing Mailu Tools
 
 ## Requirements
 
-- A host running **Mailu via `docker compose`**, with shell access as **root**
-  (the watcher talks to Docker and writes to `/var/log` and `/var/lib`).
-- **bash**, **awk** (mawk or gawk), and coreutils (`grep`, `sed`, `sort`,
-  `uniq`, `cut`, `tr`, `date`) — present on any standard Linux host.
-- **`docker compose`** (v2) or **`docker-compose`** (v1, set `COMPOSE_CMD`).
-- **systemd** for the 5-minute timer (optional — use cron otherwise).
-- **`curl`** only if you want Telegram/Slack notifications.
+- Linux with systemd (systemd is optional; without it, schedule `mailut watch`
+  and `mailut audit purge --expired --yes` yourself)
+- Python 3.9 or newer — standard library only, no pip packages
+- Docker and Docker Compose, with a working Mailu installation
+- `make` and the `install` utility (on Debian: `apt install make`)
+- root, because reading the Mailu queue and container logs needs the Docker
+  socket
 
-No database, agent, or language runtime is needed.
-
-## Install
-
-From a checkout on the Mailu host:
+## Install from source
 
 ```bash
 git clone https://github.com/devbaa/mailu-queue-tracker.git
 cd mailu-queue-tracker
-sudo ./install.sh            # installs files, config, and the 5-minute timer
+make test
+sudo make install
 ```
 
-`sudo ./install.sh --no-enable` installs everything but does **not** start the
-timer (handy if you want to run manually first).
+`make install` puts files in the conventional places:
 
-What the installer puts where:
+| Path | Contents |
+| --- | --- |
+| `/usr/local/sbin/mailut` | the command (0755) |
+| `/usr/local/lib/mailut/` | application library (0644 files) |
+| `/usr/local/share/mailut/` | example config, Rspamd snippet, install manifest |
+| `/usr/local/share/man/man8/mailut.8` | manual |
+| `/usr/local/share/man/man5/mailut.conf.5` | configuration manual |
+| `/etc/mailut/mailut.conf` | configuration (0640), **only if absent** |
+| `/var/lib/mailut/` | state (0700): database, pre-migration backups |
+| `/etc/systemd/system/mailut-*` | units |
 
-| Path | Mode | What |
-| --- | --- | --- |
-| `/usr/local/sbin/mailu-queue-watch.sh` | 0755 | the watcher |
-| `/usr/local/sbin/mailu-queue-report.sh` | 0755 | weekly-review summary |
-| `/usr/local/sbin/mailu-front-ips.sh` | 0755 | real source-IP finder |
-| `/usr/local/lib/mailu-queue-watch/*.awk` | 0644 | queue/front parsers |
-| `/etc/mailu-queue-watch.conf` | 0600 | your config (copied from the example **only if absent**) |
-| `/etc/systemd/system/mailu-queue-watch.{service,timer}` | 0644 | scheduling |
-| `/var/lib/mailu-queue-watch/` | 0750 | state, `notify-state`, `snapshots/` |
-| `/var/log/mailu-queue-watch.log` | — | metrics (created on first run) |
-| `/var/log/mailu-queue-alerts.log` | — | alerts (created on first alert) |
+An existing `/etc/mailut/mailut.conf` is never overwritten, by a first install or
+a re-install. The shipped example is always refreshed at
+`/usr/local/share/mailut/mailut.conf.example`, so you can diff against it.
 
-The installer is **idempotent** — re-running it updates the scripts and units
-while keeping your existing config (see [Update](#update)).
+### Variables
+
+The conventional ones are honoured:
+
+```bash
+make install PREFIX=/usr SYSCONFDIR=/etc LOCALSTATEDIR=/var \
+             SYSTEMD_UNIT_DIR=/usr/lib/systemd/system
+```
+
+`DESTDIR` works for packaging and for inspecting an install without touching
+the system:
+
+```bash
+rm -rf /tmp/mailut-root
+make install DESTDIR=/tmp/mailut-root
+find /tmp/mailut-root -type f
+```
+
+A staged install skips `systemctl daemon-reload`.
 
 ## Configure
 
-Edit `/etc/mailu-queue-watch.conf`. At minimum set where your compose file lives:
+```bash
+sudoedit /etc/mailut/mailut.conf
+mailut config check
+```
+
+At minimum set `compose_dir` to the directory holding your Mailu
+`docker-compose.yml`. If your service names differ from Mailu's defaults, set
+`smtp_service`, `front_service` and `antispam_service` too.
+
+Setting `local_domains` is recommended if you intend to use the `all` audit
+scope: it stops outbound recipients being swept into the audit.
+
+Every setting is documented in `man 5 mailut.conf`.
+
+## Enable services
+
+Installing and enabling are separate steps; nothing starts by itself.
 
 ```bash
-COMPOSE_DIR="/opt/mailu"          # directory containing your docker-compose.yml
-COMPOSE_CMD="docker compose"      # or "docker-compose" for the v1 binary
+sudo systemctl enable --now mailut-audit.service   # log collector (long-running)
+sudo systemctl enable --now mailut-purge.timer     # daily retention purge
+sudo systemctl enable --now mailut-watch.timer     # queue sampling, every 5 min
 ```
 
-Then, optionally, notifications and thresholds:
+or:
 
 ```bash
-TELEGRAM_BOT_TOKEN="..."          # from @BotFather
-TELEGRAM_CHAT_ID="..."
-SLACK_WEBHOOK_URL="..."           # incoming webhook
-ALERT_COMMAND=""                  # or pipe the alert to any command via stdin
+sudo make enable
 ```
 
-The shipped thresholds suit a **busy** server. On a small/transactional server
-they are far too high — lower them (there's a ready-to-paste profile in
-[thresholds.md](thresholds.md)). The full option list with comments is in
-[`etc/mailu-queue-watch.conf.example`](../etc/mailu-queue-watch.conf.example).
-
-> The config holds secrets, so it is installed `chmod 600`. It is also
-> git-ignored — only the `.example` template is committed.
-
-### Test notifications
-
-Send a timestamped test alert and confirm it arrives (compare the embedded
-send-time to when it lands to gauge any delay):
+Check them:
 
 ```bash
-sudo mailu-alert-test.sh                 # all configured channels
-sudo mailu-alert-test.sh --telegram      # just Telegram
-sudo mailu-alert-test.sh --slack         # just Slack
-sudo mailu-alert-test.sh --print         # show the message without sending
+systemctl status mailut-audit.service
+journalctl -u mailut-audit.service -f
+systemctl list-timers 'mailut-*'
 ```
 
-The message carries local time (with UTC offset), the timezone, UTC, and the
-epoch, so the send moment is unambiguous. Each channel reports `OK` or
-`FAILED (http …)` with the server's response. Equivalent raw one-liners that
-source your config (no secrets pasted):
+The collector on its own records nothing until a scope exists — see
+[audit.md](audit.md).
+
+### Why these units run as root
+
+`mailut-audit.service` and `mailut-watch.service` reach the Docker socket to
+read the Mailu queue and container logs. A dedicated unprivileged user, or
+`PrivateNetwork=yes`, or `ProtectSystem=strict` would break that access, so the
+units apply the hardening that is compatible with it — `NoNewPrivileges`,
+`PrivateTmp`, `ProtectSystem=full`, `ProtectHome`, kernel/cgroup protections,
+`MemoryDenyWriteExecute`, a restricted address-family set — rather than
+directives that would silently stop collection. `mailut-purge.service` needs no
+network at all and adds `PrivateNetwork=yes`.
+
+## What the collector reads
+
+There is nothing to wire up. `mailut-audit.service` reads two Mailu container
+logs with `docker compose logs`, exactly as you would by hand:
 
 ```bash
-# Telegram
-. /etc/mailu-queue-watch.conf
-curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  -d "chat_id=${TELEGRAM_CHAT_ID}" \
-  --data-urlencode "text=mailu test $(date -Is) $(date +%Z) | UTC $(date -u +%Y-%m-%dT%H:%M:%SZ) | $(hostname)"; echo
-
-# Slack
-. /etc/mailu-queue-watch.conf
-curl -sS -X POST -H 'Content-type: application/json' \
-  --data "{\"text\":\"mailu test $(date -Is) $(date +%Z) | UTC $(date -u +%Y-%m-%dT%H:%M:%SZ) | $(hostname)\"}" \
-  "$SLACK_WEBHOOK_URL"; echo
+cd /opt/mailu
+docker compose logs --since 10m antispam   # Rspamd: one line per scanned message
+docker compose logs --since 10m smtp       # Postfix: rejections before DATA, deliveries
 ```
 
-## Verify
+Nothing listens on the network, and no Mailu or Rspamd configuration changes.
+If Mailu is running and those commands work for root, collection works. If the
+antispam container is not up yet — at boot, for example — that poll fails, is
+logged, and is retried at the next interval; it does not crash the service.
+
+The antispam lines are Rspamd's default per-message log line, which Mailu does
+not customise. Check that this host's lines are recognised:
 
 ```bash
-sudo mailu-queue-watch.sh --print     # compute metrics, print them, change nothing
+mailut audit doctor
 ```
 
-You should get a line like `severity=ok ... queue_total=… top_sasl=…`. If every
-value is `0`, the script can't reach your queue/logs — see
-[Troubleshooting](#troubleshooting). Check the timer is scheduled:
+The `rspamd log` check reads the recent antispam log and parses it the way the
+collector will. It passes when the lines are present and recognised, warns
+when there are none in the window (no mail was scanned yet), and fails when
+lines are present but none is recognised — meaning Rspamd's `log_format` was
+changed on this host, so no Rspamd decision would be recorded.
 
-```bash
-systemctl list-timers | grep mailu-queue-watch
-```
+Two limits come from the log itself:
 
----
+- **No headers or bodies.** The logs contain neither, so only metadata is
+  collected; `mailut audit add --level headers` is refused with that reason.
+- **Long recipient lists are cut.** Rspamd names at most `log_task_max_elts`
+  recipients per line (7 by default). A message to more is attributed to those
+  only, and the event's reason says so; the other recipients still appear in
+  the smtp log as they are delivered or rejected.
 
-## How it works
+`doctor` also checks the database, the Mailu compose directory and services,
+permissions, scope levels and the units. It changes nothing and exits 4 if a
+critical check fails.
 
-```
-systemd timer (every 5 min)
-        │
-        ▼
-mailu-queue-watch.sh ──► docker compose exec smtp postqueue -j   (queue snapshot)
-        │            └─► docker compose logs --since=WINDOW smtp  (recent log window)
-        │
-        ├─ parse (lib/parse-queue.awk) → queue size, per-sender backlog, rcpt fan-out
-        ├─ count log signals → sent/bounced/deferred, rate-limits, spam blocks, SASL senders
-        ├─ evaluate thresholds → severity = ok | warning | critical, with reasons[]
-        │
-        ├─► append one key=value line to  /var/log/mailu-queue-watch.log   (always)
-        └─ if not ok:
-             ├─► append detail to         /var/log/mailu-queue-alerts.log
-             ├─► snapshot queue + logs to /var/lib/mailu-queue-watch/snapshots/<ts>/
-             └─► notify (Telegram/Slack/command) — rate-limited by ALERT_COOLDOWN_MINUTES
-```
+## Without systemd
 
-- **Run cycle.** The timer triggers a `oneshot` service that runs the watcher
-  once. Each run is an independent point-in-time measurement over the last
-  `WINDOW` (default `15m`); windows overlap because the timer fires every 5 min.
-- **Severity.** The highest level any signal reaches. `reasons=` lists each
-  signal that fired (e.g. `rate_limit_seen`, `multiple_bulk_senders_gt_5`). Full
-  list in [thresholds.md](thresholds.md); meanings in [signals.md](signals.md).
-- **Cooldown.** A sustained incident does **not** notify every 5 minutes:
-  `notify-state` records the last notification; re-notify happens only after
-  `ALERT_COOLDOWN_MINUTES`, *except* a warning→critical escalation always fires
-  immediately. The metrics and alert **logs** are still written every run.
-- **Queue can read 0 during an incident.** If Mailu's per-user rate limiter
-  rejects abuse at `RCPT`, nothing queues — which is why the log signals
-  (`rate_limits`, `top_sasl`, `bulk_senders`) matter, not queue size alone.
-- **Safety.** Parsed fields are attacker-controlled and are never `eval`-ed or
-  put in a shell command; alerts are metadata-only. See [SECURITY.md](../SECURITY.md).
-
----
-
-## Using it
-
-### Run manually
-
-```bash
-sudo mailu-queue-watch.sh                 # full run: log, alert, snapshot, notify
-sudo mailu-queue-watch.sh --print         # print metrics only; write/notify nothing
-sudo mailu-queue-watch.sh --dry-run       # compute + show what WOULD alert; write nothing
-sudo mailu-queue-watch.sh --config /path/to.conf
-```
-
-### Watch the output
-
-```bash
-tail -f /var/log/mailu-queue-watch.log    # one metrics line per run
-tail -f /var/log/mailu-queue-alerts.log   # detailed records when thresholds trip
-```
-
-### Read a metrics line
+Run the collector under whatever supervisor you have:
 
 ```
-time=… severity=critical queue_total=812 deferred_queue=640
-  sent_15m=18 bounced_15m=70 deferred_15m=590 bounce_defer_rate_pct=97
-  rate_limits_15m=4 spam_blocks_15m=210
-  top_sasl=noreply@example.com top_sasl_count=430 bulk_senders=7
-  queue_top_sender=… queue_top_domain_sender=… queue_top_domain_count=180
+/usr/local/sbin/mailut audit collect
 ```
 
-`severity`/`reasons` are the headline; `top_sasl*` and `bulk_senders` say *which*
-and *how many* credentials; `rate_limits`/`spam_blocks` are reputation events.
-Every field is defined in **[glossary.md](glossary.md)**.
-
-### Weekly review
-
-```bash
-sudo mailu-queue-report.sh                # recent alerts, noisiest senders, hits
-sudo mailu-queue-report.sh --lines 100
-```
-
-### Drain abusive mail from the queue
-
-Removing a compromised account doesn't clear its queued mail — drain it per
-address (exact match, dry-run first, confirm prompt):
-
-```bash
-sudo mailu-queue-drain.sh --dry-run noreply@mx.example.com   # count only
-sudo mailu-queue-drain.sh noreply@mx.example.com             # delete
-sudo mailu-queue-drain.sh --hold noreply@mx.example.com      # hold instead
-sudo mailu-queue-drain.sh -r victim@honeypot.example       # match by recipient
-```
-
-### Find an attacker's source IP
-
-The `smtp` log only shows the front (XCLIENT); the real IP is in the front log:
-
-```bash
-sudo mailu-front-ips.sh --since 6h                  # top external IPs + accounts
-sudo mailu-front-ips.sh --since 6h --user noreply@  # narrow to a suspect account
-```
-
-### Responding to an alert
-
-Start in alert-only mode; don't auto-delete mail or disable accounts on day one.
-The containment playbook (disable the account, drain the queue, block the IP,
-reputation cleanup) is in [incident-response.md](incident-response.md).
-
----
-
-## Schedule without systemd (cron)
-
-If the host has no systemd, the installer skips the units. Add a cron entry:
+and schedule the periodic work, for example with cron:
 
 ```cron
-*/5 * * * * root /usr/local/sbin/mailu-queue-watch.sh --config /etc/mailu-queue-watch.conf >/dev/null 2>&1
+*/5 * * * * root /usr/local/sbin/mailut watch
+17 3  * * * root /usr/local/sbin/mailut audit purge --expired --yes
 ```
 
-(Drop the `root` column in a user crontab.)
-
----
-
-## Update
-
-The installer is idempotent, so updating is just:
+## Upgrading
 
 ```bash
-cd mailu-queue-tracker
 git pull
-sudo ./install.sh            # overwrites scripts/parsers/units; KEEPS your config
+sudo make install
+sudo systemctl restart mailut-audit.service
 ```
 
-This replaces `/usr/local/sbin/*` scripts, the `lib/*.awk` parsers, and the
-systemd units, then reloads and re-enables the timer. Your
-`/etc/mailu-queue-watch.conf`, logs, and snapshots are left untouched.
+Configuration and data are preserved, and the database is copied before any
+schema change. See [operations.md](operations.md#upgrading).
 
-After a release that adds new options, compare your config with the template to
-pick up new tunables (missing options just fall back to built-in defaults, so
-nothing breaks if you skip this):
+## Removing
 
 ```bash
-diff -u /etc/mailu-queue-watch.conf etc/mailu-queue-watch.conf.example
+sudo mailut uninstall          # keeps /etc/mailut and /var/lib/mailut
+sudo make uninstall            # same thing, via the installed manifest
 ```
 
----
-
-## Uninstall
-
-```bash
-sudo ./install.sh --uninstall    # remove scripts, parsers, and systemd units
-```
-
-This stops/disables the timer and removes the installed binaries and units, but
-**keeps** your config and logs so you don't lose history or settings. To remove
-everything:
-
-```bash
-sudo ./install.sh --purge        # also deletes config, state dir, and default logs
-```
-
-`--purge` removes `/etc/mailu-queue-watch.conf`, `/var/lib/mailu-queue-watch/`
-(including snapshots), and the default `/var/log/mailu-queue-*.log`. If you
-configured custom `LOG_FILE` / `ALERT_FILE` / `STATE_DIR` paths, delete those
-manually. Both modes require root.
-
----
-
-## Troubleshooting
-
-**All metrics are `0` / `--print` shows everything empty.**
-The script can't reach the queue or logs. Check, from the host:
-
-```bash
-cd /opt/mailu && docker compose exec -T smtp postqueue -p   # does this work?
-docker compose logs --since=15m smtp | head                 # any output?
-```
-
-Fixes: point `COMPOSE_DIR` at the directory with your `docker-compose.yml`;
-confirm the service name matches `SMTP_SERVICE` (default `smtp`); for the legacy
-binary set `COMPOSE_CMD="docker-compose"`.
-
-**No notifications even though alerts appear in the log.**
-Confirm `TELEGRAM_*` / `SLACK_WEBHOOK_URL` are set and `curl` is installed; check
-you aren't inside the `ALERT_COOLDOWN_MINUTES` window; run `--print` to confirm
-`severity` actually crosses a threshold. Use `--dry-run` to see the exact alert
-text that would be sent.
-
-**Counts look low / rates seem wrong.**
-Docker's `json-file` log driver may rotate out lines inside your `WINDOW`. Check
-`docker compose logs --since=15m smtp | wc -l`, and raise the container log
-retention or shorten `WINDOW` if needed.
-
-**`permission denied` running manually.**
-Run as root (`sudo`); the systemd service already runs as root.
-
-**systemd diagnostics.**
-```bash
-systemctl status mailu-queue-watch.timer
-systemctl list-timers | grep mailu-queue-watch
-journalctl -u mailu-queue-watch.service --since '1 hour ago'
-```
-
-**Test it end-to-end without touching production** — feed a fixture in:
-```bash
-QUEUE_SOURCE_CMD="printf ''" \
-LOG_SOURCE_CMD="cat tests/fixtures/smtp-incident.log" \
-MQW_LIB_DIR=lib bin/mailu-queue-watch.sh --config /dev/null --print
-```
+`make uninstall` delegates to `mailut uninstall`, so there is only one removal
+implementation, and neither destroys audit data by default.

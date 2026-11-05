@@ -1,0 +1,12 @@
+[Unit]
+Description=Sample the Mailu queue every 5 minutes
+Documentation=man:mailut(8)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+Unit=mailut-watch.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+[Unit]
+Description=Mailu Tools queue and abuse sample
+Documentation=man:mailut(8)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mailut watch
+Nice=10
+StandardOutput=journal
+StandardError=journal
+StateDirectory=mailut
+StateDirectoryMode=0700
+
+# Needs the Docker socket to read the queue and the smtp log.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
